@@ -5,12 +5,18 @@ Camada de IA multiagente para gestão preditiva de estoque e suporte operacional
 
 <div align="center">
 
+
+
+
 ███╗   ███╗ ██████╗ ████████╗████████╗ █████╗ ██╗███╗   ██╗ █████╗ ██╗
 ████╗ ████║██╔═══██╗╚══██╔══╝╚══██╔══╝██╔══██╗██║████╗  ██║██╔══██╗██║
 ██╔████╔██║██║   ██║   ██║      ██║   ███████║██║██╔██╗ ██║███████║██║
 ██║╚██╔╝██║██║   ██║   ██║      ██║   ██╔══██║██║██║╚██╗██║██╔══██║██║
 ██║ ╚═╝ ██║╚██████╔╝   ██║      ██║   ██║  ██║██║██║ ╚████║██║  ██║██║
 ╚═╝     ╚═╝ ╚═════╝    ╚═╝      ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝
+
+
+
 
 Assistente pessoal de **finanças e agenda** construído com LangChain + LangGraph.  
 O sistema usa uma arquitetura multi-agente onde cada agente tem uma responsabilidade bem definida:  
