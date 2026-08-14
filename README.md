@@ -2,8 +2,33 @@
 
 Camada de IA multiagente para gestão preditiva de estoque e suporte operacional em varejo. O projeto combina FastAPI, LangGraph, LLMs, visão computacional, PostgreSQL, MongoDB e Redis para entregar respostas contextualizadas, controle de acesso e rastreabilidade de decisões.
 
-## Visão Geral
 
+<div align="center">
+
+███╗   ███╗ ██████╗ ████████╗████████╗ █████╗ ██╗███╗   ██╗ █████╗ ██╗
+████╗ ████║██╔═══██╗╚══██╔══╝╚══██╔══╝██╔══██╗██║████╗  ██║██╔══██╗██║
+██╔████╔██║██║   ██║   ██║      ██║   ███████║██║██╔██╗ ██║███████║██║
+██║╚██╔╝██║██║   ██║   ██║      ██║   ██╔══██║██║██║╚██╗██║██╔══██║██║
+██║ ╚═╝ ██║╚██████╔╝   ██║      ██║   ██║  ██║██║██║ ╚████║██║  ██║██║
+╚═╝     ╚═╝ ╚═════╝    ╚═╝      ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝
+
+Assistente pessoal de **finanças e agenda** construído com LangChain + LangGraph.  
+O sistema usa uma arquitetura multi-agente onde cada agente tem uma responsabilidade bem definida:  
+classificar a intenção, processar o domínio correto e formatar a resposta final para o usuário.
+
+![Python](https://img.shields.io/badge/Python-3.13+-3776AB?style=flat&logo=python&logoColor=white)
+![LangChain](https://img.shields.io/badge/LangChain-1.2-1C3C3C?style=flat&logo=langchain&logoColor=white)
+![LangGraph](https://img.shields.io/badge/LangGraph-1.1-FF6B35?style=flat)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-psycopg2-336791?style=flat&logo=postgresql&logoColor=white)
+![MongoDB](https://img.shields.io/badge/MongoDB-pymongo-47A248?style=flat&logo=mongodb&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-pyredis-FF4438?style=flat&logo=redis&logoColor=white)
+![Qdrant](https://img.shields.io/badge/Qdrant-qdrant--client-DC244C?style=flat&logo=qdrant&logoColor=white)
+
+</div>
+
+---
+
+## Visão Geral
 O Mottainai IA Layer atua como uma API de atendimento inteligente para diferentes perfis de usuário dentro do ambiente da loja:
 
 - `ESTOQUISTA`: acompanhamento de estoque, vencimentos e alertas operacionais.
