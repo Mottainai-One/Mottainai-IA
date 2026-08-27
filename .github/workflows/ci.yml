@@ -5,14 +5,18 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened]
 
 jobs:
+  # ============================================================
+  # JOB 1: IA funciona sem erros (testes, lint e compilacao)
+  # Checklist: "IA funciona sem erros"
+  # ============================================================
   test:
+    name: 1. IA Funciona sem Erros
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Python 3.13
         uses: actions/setup-python@v5
@@ -29,5 +33,203 @@ jobs:
       - name: Compile check
         run: python -m compileall -q app config interfaces tests scripts
 
-      - name: Run tests
+      - name: Run unit tests
         run: python -m unittest discover -s tests -p "test_*.py" -v
+
+  # ============================================================
+  # JOB 2: Prompts organizados e documentados
+  # Checklist: "Prompts estão organizados e documentados"
+  # ============================================================
+  prompts-documented:
+    name: 2. Prompts Documentados
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validar prompts (organizados e documentados)
+        run: python scripts/validate_ai.py prompts
+
+  # ============================================================
+  # JOB 3: Respostas da IA validadas (Juiz fail-closed + guardrail de saida)
+  # Checklist: "Respostas da IA são validadas"
+  # ============================================================
+  responses-validated:
+    name: 3. Respostas Validadas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validar respostas (Juiz fail-closed e guardrail de saida)
+        run: python scripts/validate_ai.py responses
+
+  # ============================================================
+  # JOB 4: Erros e timeouts tratados
+  # Checklist: "Erros e timeouts são tratados"
+  # ============================================================
+  errors-timeouts:
+    name: 4. Erros e Timeouts Tratados
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verificar retry, backoff e timeouts nas integracoes
+        run: |
+          set -e
+          echo ">>> Verificando tratamento de erros e timeouts"
+
+          # LLM deve ter retry com backoff (timeout/5xx/rate limit transientes)
+          grep -qE 'with_retry|tenacity|retry' app/agents/runtime.py \
+            || { echo "ERRO: runtime de LLM nao implementa retry"; exit 1; }
+
+          # Redis deve ter timeouts de conexao/socket explicitos
+          grep -qE 'socket_connect_timeout|socket_timeout' app/database/redis_client.py \
+            || { echo "ERRO: cliente Redis nao define timeouts"; exit 1; }
+
+          # Chamadas HTTP externas (fonte RAG e tools MCP) devem ter timeout
+          grep -qE 'timeout=' app/rag/external_source.py \
+            || { echo "ERRO: fonte externa RAG (httpx) sem timeout"; exit 1; }
+          grep -qE 'timeout=' app/tools/mcp_tools.py \
+            || { echo "ERRO: tools MCP (httpx) sem timeout"; exit 1; }
+
+          # Config de retries/timeouts centralizada
+          grep -qE 'llm_max_retries|timeout_seconds' config/settings.py \
+            || { echo "ERRO: config de retries/timeouts ausente em config/settings.py"; exit 1; }
+
+          echo ">>> Erros e timeouts tratados OK"
+
+  # ============================================================
+  # JOB 5: Agentes com responsabilidades e ferramentas bem definidas
+  # Checklist: "Agentes possuem responsabilidades e ferramentas bem definidas"
+  # ============================================================
+  agents-tools:
+    name: 5. Agentes e Ferramentas Definidas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validar agentes e ferramentas
+        run: python scripts/validate_ai.py agents
+
+  # ============================================================
+  # JOB 6: RAG retornando contexto relevante
+  # Checklist: "RAG está retornando contexto relevante"
+  # ============================================================
+  rag-context:
+    name: 6. RAG Contexto Relevante
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validar pipeline de RAG
+        run: python scripts/validate_ai.py rag
+
+  # ============================================================
+  # JOB 7: Sem credenciais expostas
+  # Checklist: "Não existem credenciais expostas"
+  # ============================================================
+  secret-scan:
+    name: 7. Sem Credenciais Expostas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks (com allowlist de placeholders documentados)
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o gitleaks.tgz
+          tar -xzf gitleaks.tgz gitleaks
+          ./gitleaks git --no-banner --redact -v --config .gitleaks.toml
+
+      - name: Protecao do .env e credenciais
+        run: |
+          set -e
+          echo ">>> Verificando que nao ha credenciais versionadas"
+
+          # Nenhum .env real versionado
+          if find . -name ".env" -not -path "./.git/*" | grep -q .; then
+            echo "ERRO: arquivo .env encontrado no repositorio"
+            exit 1
+          fi
+
+          # .env nunca commitado no historico
+          if git log --all --oneline -- .env | grep -q .; then
+            echo "ERRO: .env ja foi commitado no historico"
+            exit 1
+          fi
+
+          # .env no .gitignore
+          if ! grep -qE '^\.env' .gitignore 2>/dev/null; then
+            echo "AVISO: .env nao esta no .gitignore"
+          fi
+
+          # Sem chaves/segredos hard-coded em codigo python (fora de .env.example)
+          if grep -rEn 'sk-[A-Za-z0-9]{10,}|AIza[A-Za-z0-9_-]{20,}|Bearer [A-Za-z0-9]{20,}' \
+              --include="*.py" . | grep -q .; then
+            echo "ERRO: possivel chave hard-coded encontrada no codigo"
+            exit 1
+          fi
+
+          echo ">>> Nenhuma credencial exposta OK"
+
+  # ============================================================
+  # JOB 8: Alteracoes de IA documentadas na PR
+  # Checklist: "Alterações de IA estão documentadas na PR"
+  # ============================================================
+  pr-documentation:
+    name: 8. Alteracoes Documentadas na PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Convencao de commits
+        run: |
+          set -e
+          PATTERN="^(feat|fix|docs|style|refactor|test|chore|ci|perf|build|revert):"
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            COMMITS=$(git log --oneline ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
+          else
+            COMMITS=$(git log --oneline -10)
+          fi
+
+          echo "Commits encontrados:"
+          echo "$COMMITS"
+
+          echo "$COMMITS" | while read -r line; do
+            [ -z "$line" ] && continue
+            COMMIT_MSG=$(echo "$line" | cut -d' ' -f2-)
+            if ! echo "$COMMIT_MSG" | grep -qE "$PATTERN"; then
+              echo "ERRO: Commit nao segue a convencao: $COMMIT_MSG"
+              echo "Padrao esperado: feat|fix|docs|style|refactor|test|chore|ci: mensagem"
+              exit 1
+            fi
+          done
+
+          echo "Convencao de commits OK"
+
+      - name: Verificar documentacao das alteracoes de agentes
+        run: |
+          echo ">>> Alteracoes em agentes devem estar refletidas na documentacao"
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
+          else
+            CHANGED=$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)
+          fi
+
+          echo "Arquivos alterados:"
+          echo "$CHANGED"
+
+          # Se houve alteracao em app/agents/ e a doc nao foi tocada, avisa
+          # (nao bloqueia) para encorajar documentar a mudanca na PR.
+          if echo "$CHANGED" | grep -q 'app/agents/'; then
+            if ! echo "$CHANGED" | grep -qE '(ARQUITETURA\.md|README\.md)'; then
+              echo "AVISO: alteracoes em agentes sem atualizacao em ARQUITETURA.md/README.md"
+              echo "Descreva a mudanca de IA na descricao da PR (checklist item 8)."
+            fi
+          fi
+
+          echo "Verificacao de documentacao concluida"
