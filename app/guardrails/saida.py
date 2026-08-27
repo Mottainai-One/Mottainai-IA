@@ -1,25 +1,29 @@
 """
-Guardrail de SAÍDA — roda DEPOIS do Agente Juiz aprovar.
-Responsabilidades:
-  1. Bloqueia vazamento de PII/dado sensível residual
-  2. Bloqueia respostas que contenham dados de outros usuários/empresas
-  3. Trunca respostas anormalmente longas
-  4. Garante que a resposta seja uma string válida
+OUTPUT guardrail — runs AFTER the Judge Agent approves.
+Responsibilities:
+  1. Blocks leakage of residual PII/sensitive data
+  2. Blocks responses containing data from other users/companies
+  3. Truncates abnormally long responses
+  4. Ensures the response is a valid string
+
+Note: SaidaResult.output strings are user-facing (they become the chat
+response), so they are kept in Portuguese. SaidaResult.warnings is currently
+unused elsewhere in the codebase.
 """
 import re
 from dataclasses import dataclass
 
-# PII e dados sensíveis que nunca devem aparecer na resposta ao usuário
+# PII and sensitive data that must never appear in the response to the user
 _PII_PATTERNS = re.compile(
-    r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b"  # CPF
-    r"|\b\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\b"  # cartão
+    r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b"  # CPF (Brazilian individual tax ID)
+    r"|\b\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\b"  # card number
     r"|\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Z|a-z]{2,}\b"  # e-mail
-    r"|\(\d{2}\)\s?\d{4,5}-?\d{4}"  # telefone BR
-    r"|\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b",  # CNPJ
+    r"|\(\d{2}\)\s?\d{4,5}-?\d{4}"  # Brazilian phone number
+    r"|\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b",  # CNPJ (Brazilian company tax ID)
     re.IGNORECASE,
 )
 
-# Dados internos que não devem vazar para o cliente final
+# Internal data that must not leak to the end customer
 _INTERNAL_LEAK_PATTERNS = re.compile(
     r"(senha|password|secret|token|api[_\s]?key|private[_\s]?key|hash)",
     re.IGNORECASE,
@@ -37,22 +41,22 @@ class SaidaResult:
 
 def guardrail_saida(response: str, user_role: str = "cliente") -> SaidaResult:
     """
-    Processa a resposta antes de devolver ao usuário.
-    Retorna SaidaResult com safe=True se passou em todos os checks.
+    Processes the response before returning it to the user.
+    Returns a SaidaResult with safe=True if it passed all checks.
     """
     warnings: list[str] = []
     output = response
 
-    # 1. Valida tipo
+    # 1. Validates the type
     if not isinstance(output, str):
         output = str(output)
 
-    # 2. Remoção de PII residual
+    # 2. Residual PII removal
     if _PII_PATTERNS.search(output):
         output = _PII_PATTERNS.sub("[INFORMAÇÃO PROTEGIDA]", output)
         warnings.append("PII detectado e removido da resposta.")
 
-    # 3. Verificação de vazamento de dado interno
+    # 3. Internal data leak check
     if _INTERNAL_LEAK_PATTERNS.search(output):
         return SaidaResult(
             safe=False,
@@ -60,7 +64,7 @@ def guardrail_saida(response: str, user_role: str = "cliente") -> SaidaResult:
             warnings=["Resposta bloqueada: possível vazamento de dado interno."],
         )
 
-    # 4. Truncar resposta excessivamente longa
+    # 4. Truncates an excessively long response
     if len(output) > MAX_RESPONSE_LEN:
         output = output[:MAX_RESPONSE_LEN] + "\n\n[Resposta truncada por segurança.]"
         warnings.append("Resposta truncada por exceder limite de tamanho.")

@@ -1,4 +1,4 @@
-"""Cliente Redis assíncrono com pool único e timeouts explícitos."""
+"""Async Redis client with a single pool and explicit timeouts."""
 import redis.asyncio as aioredis
 
 from config.settings import get_settings

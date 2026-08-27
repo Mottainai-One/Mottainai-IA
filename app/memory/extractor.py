@@ -1,4 +1,9 @@
-"""Extração local e conservadora de fatos e preferências para memória de longo prazo."""
+"""Local, conservative extraction of facts and preferences for long-term memory.
+
+Note: the regex patterns below match Portuguese phrases (e.g. "prefiro",
+"gosto de", "sou", "trabalho") because they run against the end user's
+message, which is in Portuguese — they are not translated.
+"""
 import re
 
 _MAX_MEMORY_LENGTH = 200
@@ -15,7 +20,7 @@ _PATTERNS = (
 
 
 def extract_memories(message: str) -> dict[str, list[str]]:
-    """Extrai somente afirmações explícitas, curtas e não sensíveis do usuário."""
+    """Extracts only explicit, short, non-sensitive statements from the user."""
     result = {"preferences": [], "facts": []}
     normalized = " ".join(message.strip().split())
     if not normalized or len(normalized) > 1000 or _SENSITIVE_PATTERN.search(normalized):

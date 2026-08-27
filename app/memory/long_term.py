@@ -1,7 +1,10 @@
 """
-Memória de longo prazo — preferências e fatos sobre o usuário.
-Persiste em MongoDB (coleção: memories) com chave única (empresaId, usuarioId).
-Permite que os agentes personalizem respostas com base no histórico do usuário.
+Long-term memory — preferences and facts about the user.
+Persisted in MongoDB (collection: memories) with a unique key (empresaId, usuarioId).
+Lets agents personalize responses based on the user's history.
+
+Note: format_memory_for_prompt() builds text injected directly into the
+LLM system prompt, so its output is deliberately kept in Portuguese.
 """
 from datetime import datetime, timezone
 
@@ -14,8 +17,8 @@ def _utcnow() -> datetime:
 
 async def load_memory(empresa_id: int, usuario_id: int) -> dict:
     """
-    Retorna a memória de longo prazo do usuário.
-    Inclui: preferences, facts, lastAgent, lastSkill.
+    Returns the user's long-term memory.
+    Includes: preferences, facts, lastAgent, lastSkill.
     """
     db = get_mongo_db()
     mem = await db.memories.find_one({"empresaId": empresa_id, "usuarioId": usuario_id})
@@ -39,8 +42,8 @@ async def update_memory(
     last_skill: str | None = None,
 ) -> None:
     """
-    Atualiza memória do usuário.
-    Usa $addToSet para não duplicar preferências/fatos.
+    Updates the user's memory.
+    Uses $addToSet to avoid duplicating preferences/facts.
     """
     db = get_mongo_db()
     now = _utcnow()
@@ -67,7 +70,8 @@ async def update_memory(
 
 def format_memory_for_prompt(memory: dict) -> str:
     """
-    Formata a memória de longo prazo como texto para injetar no system prompt.
+    Formats long-term memory as text to inject into the system prompt.
+    (Output kept in Portuguese — see module docstring.)
     """
     lines: list[str] = []
     if memory["preferences"]:

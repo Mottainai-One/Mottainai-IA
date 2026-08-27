@@ -1,4 +1,11 @@
-"""Consultas read-only ao schema operacional Mottainai v6."""
+"""Read-only queries against the Mottainai v6 operational schema.
+
+Note: SQL-computed status strings ('RUPTURA', 'ABAIXO_MINIMO', 'EXCESSO',
+etc.) and the dict keys returned by get_shelf_inventory_crosscheck
+("encontrados", "ausentes_esperados", "alertas_ativos") are a data contract
+consumed by other code and by the agents' LLM prompts — they are kept in
+Portuguese, not translated as part of this pass.
+"""
 from decimal import Decimal
 from typing import Any
 
@@ -13,15 +20,15 @@ async def _exec(
     empresa_id: int,
     params: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Executa uma consulta no escopo do tenant autenticado."""
+    """Executes a query scoped to the authenticated tenant."""
     if isinstance(empresa_id, bool) or empresa_id < 1:
-        raise ValueError("empresa_id deve ser um inteiro positivo.")
+        raise ValueError("empresa_id must be a positive integer.")
 
     query_params = {**(params or {}), "empresa_id": empresa_id}
     async with get_pg_session() as session:
-        # O schema operacional v6 aplica RLS em company, retail_store,
-        # inventory e sales_transaction. O contexto é local à transação para
-        # não vazar tenant entre conexões.
+        # The v6 operational schema applies RLS on company, retail_store,
+        # inventory and sales_transaction. The context is local to the
+        # transaction to avoid leaking the tenant across connections.
         await session.execute(
             text("SELECT set_config('app.current_company_id', CAST(:empresa_id AS TEXT), true)"),
             {"empresa_id": str(empresa_id)},
@@ -37,11 +44,11 @@ async def get_stock_alerts(
     store_id: int | None = None,
 ) -> list[dict]:
     """
-    Retorna alertas ativos de estoque para uma empresa.
-    Usado pelo Agente Funcionário e Motor Preditivo.
+    Returns active stock alerts for a company.
+    Used by the Employee Agent and the Predictive Engine.
     """
     if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
-        raise ValueError("store_id deve ser um inteiro positivo.")
+        raise ValueError("store_id must be a positive integer.")
 
     store_filter = "AND a.store_id = :store_id" if store_id is not None else ""
     sql = f"""
@@ -82,8 +89,8 @@ async def get_stock_alerts(
 
 async def get_expiring_batches(empresa_id: int, days_ahead: int = 7) -> list[dict]:
     """
-    Retorna lotes com vencimento próximo.
-    Usado pelo Motor Preditivo para detecção de risco de perda.
+    Returns batches with an upcoming expiration date.
+    Used by the Predictive Engine for loss risk detection.
     """
     sql = """
         SELECT
@@ -133,8 +140,8 @@ async def get_expiring_batches(empresa_id: int, days_ahead: int = 7) -> list[dic
 
 async def get_sales_summary(empresa_id: int, days_back: int = 30) -> list[dict]:
     """
-    Retorna resumo de vendas por produto nos últimos `days_back` dias.
-    Usado pelo Motor Preditivo para previsão de demanda.
+    Returns a per-product sales summary for the last `days_back` days.
+    Used by the Predictive Engine for demand forecasting.
     """
     sql = """
         SELECT
@@ -168,8 +175,8 @@ async def get_sales_summary(empresa_id: int, days_back: int = 30) -> list[dict]:
 
 async def get_kpis(empresa_id: int) -> dict:
     """
-    KPIs gerenciais consolidados.
-    Usado pelo Agente Dono.
+    Consolidated management KPIs.
+    Used by the Owner Agent.
     """
     sql_revenue = """
         SELECT COALESCE(SUM(si.subtotal), 0) AS revenue_30d
@@ -230,11 +237,11 @@ async def get_kpis(empresa_id: int) -> dict:
 
 async def get_inventory_status(empresa_id: int, store_id: int | None = None) -> list[dict]:
     """
-    Situação atual do inventário (quantidade em estoque vs mínimo).
-    Usado pelo Agente Funcionário.
+    Current inventory status (stock quantity vs minimum).
+    Used by the Employee Agent.
     """
     if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
-        raise ValueError("store_id deve ser um inteiro positivo.")
+        raise ValueError("store_id must be a positive integer.")
 
     store_filter = "AND i.store_id = :store_id" if store_id is not None else ""
     sql = f"""
@@ -287,9 +294,9 @@ async def get_inventory_match(
     product_name: str,
     store_id: int | None = None,
 ) -> dict[str, Any] | None:
-    """Localiza um produto visto em prateleira dentro do tenant autenticado."""
+    """Locates a product seen on the shelf within the authenticated tenant."""
     if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
-        raise ValueError("store_id deve ser um inteiro positivo.")
+        raise ValueError("store_id must be a positive integer.")
 
     store_filter = "AND i.store_id = :store_id" if store_id is not None else ""
     sql = f"""
@@ -352,7 +359,7 @@ async def get_shelf_inventory_crosscheck(
     store_id: int | None,
     detected_products: list[str],
 ) -> dict[str, list[dict[str, Any]]]:
-    """Cruza produtos detectados com estoque e alertas do schema v6."""
+    """Cross-checks detected products against v6 schema stock and alerts."""
     found: list[dict[str, Any]] = []
     seen_names: set[str] = set()
     for product_name in detected_products:

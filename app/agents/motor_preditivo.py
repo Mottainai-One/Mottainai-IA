@@ -1,14 +1,17 @@
 """
-Agente Motor Preditivo — autônomo, não reativo.
-Roda por trigger de evento OU schedule (não espera pergunta do usuário).
+Predictive Engine Agent — autonomous, not reactive.
+Runs on event trigger OR schedule (does not wait for a user question).
 
-Subagentes/capacidades:
-  1. Previsão de Demanda (Postgres histórico + Open-Meteo API externa)
-  2. Detecção de Risco de Perda (Lote x Localização x Giro)
-  3. Geração de Ação Sugerida (promoção / transferência / doação / descarte)
-  4. Pré-Lista de Abastecimento
+Sub-agents/capabilities:
+  1. Demand Forecast (Postgres history + Open-Meteo external API)
+  2. Loss Risk Detection (batch x location x turnover)
+  3. Suggested Action Generation (flash promotion / transfer / donation / disposal)
+  4. Restocking Pre-List
 
-Escreve em: mottainai.alert e mottainai.suggested_action (Postgres).
+Writes to: mottainai.alert and mottainai.suggested_action (Postgres).
+
+Note: SYSTEM_PROMPT and the operational context block fed to the LLM are
+deliberately kept in Portuguese, same as the other agents.
 """
 import json
 from datetime import datetime, timezone
@@ -35,20 +38,20 @@ NUNCA invente dados. Use APENAS os dados fornecidos no contexto.
 
 async def node_motor_preditivo(state: MottainaiState) -> MottainaiState:
     """
-    Nó do Motor Preditivo no grafo.
-    Também pode ser chamado diretamente via /motor-preditivo/trigger.
+    Predictive Engine node in the graph.
+    Can also be invoked directly via /motor-preditivo/trigger.
     """
     empresa_id = state["empresa_id"]
 
-    # 1. Dados Postgres
+    # 1. Postgres data
     expiring = await get_expiring_batches(empresa_id, days_ahead=14)
     sales = await get_sales_summary(empresa_id, days_back=60)
     alerts = await get_stock_alerts(empresa_id)
 
-    # 2. Fonte externa — Open-Meteo via MCP (A2A)
+    # 2. External source — Open-Meteo via MCP (A2A)
     try:
         weather_raw = await mcp_call_weather_agent(
-            latitude=-23.5505,   # São Paulo
+            latitude=-23.5505,   # São Paulo, Brazil
             longitude=-46.6333,
         )
         forecast = await get_weather_forecast()
@@ -61,7 +64,7 @@ Dados climáticos atuais (fonte: Open-Meteo via MCP — {forecast['source']}):
     except Exception as e:
         weather_context = f"Dados climáticos indisponíveis: {e}"
 
-    # 3. Contexto completo para o LLM
+    # 3. Full context for the LLM (kept in Portuguese, see module docstring)
     context = f"""
 LOTES COM RISCO DE VENCIMENTO (próximos 14 dias):
 {json.dumps(expiring, default=str, ensure_ascii=False, indent=2)}
@@ -80,7 +83,7 @@ ALERTAS ATIVOS:
         HumanMessage(content=f"Execute análise completa para empresa_id={empresa_id}. Gere: previsão de demanda, riscos de perda, ações sugeridas e pré-lista de abastecimento."),
     ]
 
-    llm = get_llm(temperature=0.1)  # baixa temperatura para análise técnica
+    llm = get_llm(temperature=0.1)  # low temperature for technical analysis
     response = await llm.ainvoke(messages)
     content = response.content
 

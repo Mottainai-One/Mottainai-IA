@@ -1,10 +1,10 @@
 """
-Supervisor — Orquestrador LangGraph.
-É o nó raiz do grafo. Roteia a mensagem do usuário para o agente correto
-com base no perfil (role) e na intenção detectada.
+Supervisor — LangGraph orchestrator.
+This is the root node of the graph. Routes the user message to the correct
+agent based on the profile (role) and the detected intent.
 
-Fluxo:
-  start → guardrail_entrada → supervisor_route → [agente] → juiz → guardrail_saida → end
+Flow:
+  start → guardrail_entrada → supervisor_route → [agent] → juiz → guardrail_saida → end
 """
 from __future__ import annotations
 
@@ -21,11 +21,11 @@ from app.memory.long_term import load_memory, update_memory
 from app.memory.short_term import get_or_create_conversation, load_history, save_message
 
 # ─────────────────────────────────────────────
-# Nós do grafo
+# Graph nodes
 # ─────────────────────────────────────────────
 
 async def node_guardrail_entrada(state: MottainaiState) -> MottainaiState:
-    """Valida e sanitiza a entrada do usuário."""
+    """Validates and sanitizes the user input."""
     result = await guardrail_entrada(
         state["user_input"],
         state["usuario_id"],
@@ -46,7 +46,7 @@ async def node_guardrail_entrada(state: MottainaiState) -> MottainaiState:
 
 
 async def node_load_context(state: MottainaiState) -> MottainaiState:
-    """Carrega histórico e memória de longo prazo."""
+    """Loads session history and long-term memory."""
     if state.get("error"):
         return state
 
@@ -54,7 +54,7 @@ async def node_load_context(state: MottainaiState) -> MottainaiState:
         state["session_id"],
         state["empresa_id"],
         state["usuario_id"],
-        agent="pending",  # agente ainda não foi selecionado neste ponto
+        agent="pending",  # agent has not been selected yet at this point
     )
     history = await load_history(state["session_id"])
     memory = await load_memory(state["empresa_id"], state["usuario_id"])
@@ -64,14 +64,14 @@ async def node_load_context(state: MottainaiState) -> MottainaiState:
 
 async def node_supervisor_route(state: MottainaiState) -> MottainaiState:
     """
-    Supervisor: detecta intenção e seleciona o agente.
-    NÃO usa RAG, NÃO usa tools, NÃO escreve memória.
+    Supervisor: detects intent and selects the agent.
+    Does NOT use RAG, does NOT use tools, does NOT write memory.
 
-    Regras de roteamento por role:
-      - ESTOQUISTA    → agente_funcionario
-      - GERENTE       → agente_funcionario
-      - DONO          → agente_dono (motor_preditivo se pedir previsão)
-      - CLIENTE       → agente_cliente ou agente_faq para dúvidas gerais
+    Routing rules by role:
+      - ESTOQUISTA (stock clerk) → agente_funcionario
+      - GERENTE (manager)        → agente_funcionario
+      - DONO (owner)              → agente_dono (motor_preditivo if asking for a forecast)
+      - CLIENTE (customer)        → agente_cliente or agente_faq for general questions
     """
     if state.get("error"):
         return state
@@ -79,7 +79,8 @@ async def node_supervisor_route(state: MottainaiState) -> MottainaiState:
     role = state["user_role"].upper()
     text = state["sanitized_input"].lower()
 
-    # Motor preditivo: só aciona para perguntas analíticas/preditivas
+    # Predictive engine: only triggers for analytical/predictive questions.
+    # Keywords are in Portuguese because they match the end user's message.
     KEYWORDS_PREDITIVO = {
         "previsão", "previsao", "prever", "preve", "prevê",
         "demanda", "abastecimento", "tendência", "tendencia",
@@ -92,6 +93,7 @@ async def node_supervisor_route(state: MottainaiState) -> MottainaiState:
         if any(kw in text for kw in KEYWORDS_PREDITIVO):
             return {**state, "selected_agent": "motor_preditivo"}
 
+    # FAQ keywords, also in Portuguese to match the end user's message.
     FAQ_KEYWORDS = {"faq", "dúvida", "duvida", "como funciona", "ajuda", "suporte", "fidelidade", "pontos", "sustentabilidade"}
     if role == "CLIENTE":
         selected = "faq" if any(keyword in text for keyword in FAQ_KEYWORDS) else "cliente"
@@ -106,14 +108,15 @@ async def node_supervisor_route(state: MottainaiState) -> MottainaiState:
 
 
 async def node_guardrail_saida(state: MottainaiState) -> MottainaiState:
-    """Filtra a resposta aprovada pelo Juiz antes de retornar ao usuário."""
+    """Filters the response approved by the Judge before returning it to the user."""
     if state.get("error"):
         return state
 
     result = guardrail_saida(state["agent_response"], state["user_role"])
+    # User-facing fallback message — kept in Portuguese, same language as the rest of the chat.
     final = result.output if result.safe else "Não consigo fornecer essa informação no momento."
 
-    # Persiste mensagens no histórico
+    # Persists messages to the history
     await save_message(
         state["session_id"],
         role="user",
@@ -130,7 +133,7 @@ async def node_guardrail_saida(state: MottainaiState) -> MottainaiState:
         sources=state.get("sources", []),
     )
 
-    # Atualiza memória de longo prazo com dados explícitos e não sensíveis.
+    # Updates long-term memory with explicit, non-sensitive data.
     await update_memory(
         state["empresa_id"], state["usuario_id"], last_agent=state["selected_agent"]
     )
@@ -144,24 +147,24 @@ async def node_guardrail_saida(state: MottainaiState) -> MottainaiState:
 
 
 def _route_after_guardrail(state: MottainaiState) -> str:
-    """Decide para onde ir após o guardrail de entrada."""
+    """Decides where to go after the input guardrail."""
     if state.get("error"):
         return "end"
     return "load_context"
 
 
 def _route_agent(state: MottainaiState) -> str:
-    """Rota para o agente correto após o supervisor."""
+    """Routes to the correct agent after the supervisor."""
     return state.get("selected_agent", "cliente")
 
 
 def _route_after_judge(state: MottainaiState) -> str:
-    """Após o juiz, vai sempre para o guardrail de saída."""
+    """After the judge, always goes to the output guardrail."""
     return "guardrail_saida"
 
 
 def _instrument_node(name: str, node: Callable[[MottainaiState], Awaitable[MottainaiState]]):
-    """Mede cada etapa do grafo sem alterar o comportamento do agente."""
+    """Measures each step of the graph without changing the agent's behavior."""
     async def instrumented(state: MottainaiState) -> MottainaiState:
         started = time.perf_counter()
         result = await node(state)
@@ -172,13 +175,13 @@ def _instrument_node(name: str, node: Callable[[MottainaiState], Awaitable[Motta
 
 
 # ─────────────────────────────────────────────
-# Construção do grafo
+# Graph construction
 # ─────────────────────────────────────────────
 
 def build_graph() -> StateGraph:
     """
-    Monta o grafo LangGraph do Mottainai.
-    Os nós dos agentes são injetados externamente para evitar circular imports.
+    Assembles the Mottainai LangGraph.
+    Agent nodes are injected externally to avoid circular imports.
     """
     from app.agents.cliente import node_agente_cliente
     from app.agents.faq import node_agente_faq
@@ -189,7 +192,7 @@ def build_graph() -> StateGraph:
 
     graph = StateGraph(MottainaiState)
 
-    # Nós
+    # Nodes
     graph.add_node("guardrail_entrada", _instrument_node("guardrail_entrada", node_guardrail_entrada))
     graph.add_node("load_context", _instrument_node("load_context", node_load_context))
     graph.add_node("supervisor", _instrument_node("supervisor", node_supervisor_route))
@@ -201,7 +204,7 @@ def build_graph() -> StateGraph:
     graph.add_node("juiz", _instrument_node("juiz", node_agente_juiz))
     graph.add_node("guardrail_saida", _instrument_node("guardrail_saida", node_guardrail_saida))
 
-    # Arestas
+    # Edges
     graph.set_entry_point("guardrail_entrada")
     graph.add_conditional_edges("guardrail_entrada", _route_after_guardrail, {"end": END, "load_context": "load_context"})
     graph.add_edge("load_context", "supervisor")
@@ -221,11 +224,11 @@ def build_graph() -> StateGraph:
     graph.add_edge("funcionario", "juiz")
     graph.add_edge("dono", "juiz")
     graph.add_edge("motor_preditivo", "juiz")
-    graph.add_edge("juiz", "guardrail_saida")  # edge simples — sem condição desnecessária
+    graph.add_edge("juiz", "guardrail_saida")  # simple edge — no unnecessary condition
     graph.add_edge("guardrail_saida", END)
 
     return graph.compile()
 
 
-# Instância global compilada
+# Compiled global instance
 mottainai_graph = build_graph()

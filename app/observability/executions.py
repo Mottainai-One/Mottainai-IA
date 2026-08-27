@@ -1,4 +1,4 @@
-"""Persistência de rastros de execução para auditoria e SRE."""
+"""Persistence of execution traces for audit and SRE."""
 from datetime import datetime, timezone
 
 from app.database.mongo import get_mongo_db

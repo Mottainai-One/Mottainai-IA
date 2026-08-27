@@ -1,7 +1,10 @@
 """
-Agente Dono — atende o proprietário/gestor da empresa.
-Skills: KPIs, Relatórios, BI, Analytics, Recomendações.
-Usa Postgres (analytics) + RAG. Escreve memória.
+Owner Agent — serves the company's owner/manager.
+Skills: KPIs, reports, BI, analytics, recommendations.
+Uses Postgres (analytics) + RAG. Writes memory.
+
+Note: SYSTEM_PROMPT and the analytics context block fed to the LLM are
+deliberately kept in Portuguese, same as the other agents.
 """
 import json
 from datetime import date
@@ -27,11 +30,11 @@ Suas responsabilidades:
 
 
 async def node_agente_dono(state: MottainaiState) -> MottainaiState:
-    """Nó do Agente Dono no grafo LangGraph."""
+    """Owner Agent node in the LangGraph graph."""
     query = state["sanitized_input"]
     empresa_id = state["empresa_id"]
 
-    # Dados analytics do Postgres
+    # Analytics data from Postgres
     kpis = await get_kpis(empresa_id)
     sales = await get_sales_summary(empresa_id, days_back=30)
     alerts = await get_stock_alerts(empresa_id, limit=10)

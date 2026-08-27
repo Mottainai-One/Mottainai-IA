@@ -1,4 +1,4 @@
-"""Contrato único de disponibilidade do schema operacional Mottainai."""
+"""Single source of truth for Mottainai operational schema readiness."""
 
 OPERATIONAL_SCHEMA_READY_QUERY = """
 SELECT

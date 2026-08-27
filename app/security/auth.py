@@ -1,4 +1,4 @@
-"""Autenticação e autorização da API por JWT Bearer."""
+"""API authentication and authorization via JWT Bearer."""
 from dataclasses import dataclass
 from typing import Annotated
 
@@ -21,7 +21,7 @@ class AuthContext:
 
 
 def _invalid_token() -> HTTPException:
-    return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token de acesso inválido.")
+    return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid access token.")
 
 
 def _positive_int(value: object) -> int:
@@ -34,7 +34,7 @@ def _positive_int(value: object) -> int:
 
 
 def is_configured_jwt_secret(secret: object) -> bool:
-    """Distingue segredo JWT local configurado de placeholders de exemplo."""
+    """Distinguishes a locally configured JWT secret from example placeholders."""
     if not isinstance(secret, str):
         return False
     normalized = secret.strip().lower()
@@ -78,7 +78,7 @@ def require_roles(*roles: str):
 
     async def dependency(principal: Annotated[AuthContext, Depends(require_auth)]) -> AuthContext:
         if principal.role not in allowed:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão insuficiente.")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permission.")
         return principal
 
     return dependency

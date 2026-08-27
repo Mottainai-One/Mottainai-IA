@@ -1,8 +1,11 @@
 """
-Tools de suporte ao Agente de Visão.
-  - encode_image_base64: lê arquivo e converte para base64
-  - crosscheck_with_inventory: cruza produtos detectados com estoque no Postgres
-  - generate_shelf_report: gera texto formatado do resultado da análise
+Support tools for the Vision Agent.
+  - encode_image_base64: reads a file and converts it to base64
+  - crosscheck_with_inventory: cross-checks detected products against Postgres stock
+  - generate_shelf_report: generates formatted text of the analysis result
+
+Note: generate_shelf_report()'s output is shown directly to the employee, so
+it is deliberately kept in Portuguese, like the rest of the chat UX.
 """
 from __future__ import annotations
 
@@ -14,8 +17,8 @@ from app.tools.postgres_tools import get_shelf_inventory_crosscheck
 
 def encode_image_base64(path: Path) -> str:
     """
-    Lê imagem do disco e retorna base64.
-    Suporta jpg, png, webp, gif.
+    Reads an image from disk and returns base64.
+    Supports jpg, png, webp, gif.
     """
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
@@ -27,25 +30,26 @@ async def crosscheck_with_inventory(
     detected_products: list[str],
 ) -> dict:
     """
-    Cruza os produtos detectados visualmente com o inventário do PostgreSQL.
+    Cross-checks visually detected products against the PostgreSQL inventory.
 
-    Para cada produto detectado, verifica:
-      - Se existe cadastrado (busca por nome aproximado)
-      - Estoque atual vs mínimo
-      - Alertas ativos da loja, em contexto separado
+    For each detected product, checks:
+      - Whether it exists in the catalog (approximate name search)
+      - Current stock vs minimum
+      - Active store alerts, in a separate context
 
-    Também retorna produtos esperados na prateleira que NÃO foram detectados na foto.
+    Also returns products expected on the shelf that were NOT detected in the photo.
     """
-    # O schema v6 relaciona company → retail_store → inventory → batch → product.
-    # Alertas não têm FK para produto/lote, então itens ausentes são inferidos pelo
-    # estoque crítico, não pelo texto livre de title/description do alerta.
+    # The v6 schema relates company → retail_store → inventory → batch → product.
+    # Alerts have no FK to product/batch, so missing items are inferred from
+    # critical stock, not from the alert's free-text title/description.
     return await get_shelf_inventory_crosscheck(empresa_id, store_id, detected_products)
 
 
 def generate_shelf_report(result: dict) -> str:
     """
-    Gera relatório textual legível para exibir ao funcionário
-    após a análise visual da prateleira.
+    Generates a readable text report to show the employee
+    after the visual shelf analysis.
+    (Output kept in Portuguese — see module docstring.)
     """
     lines: list[str] = []
 
@@ -53,7 +57,7 @@ def generate_shelf_report(result: dict) -> str:
     ocupacao = result.get("ocupacao_pct", 0)
     confianca = result.get("confianca_analise", 0)
 
-    # Cabeçalho
+    # Header
     if estado == "CRÍTICO" or estado == "CRITICO":
         lines.append("PRATELEIRA EM ESTADO CRÍTICO")
     elif estado == "ATENÇÃO" or estado == "ATENCAO":
@@ -67,7 +71,7 @@ def generate_shelf_report(result: dict) -> str:
     lines.append(f"Ocupação estimada: {ocupacao}% | Confiança da análise: {int(confianca * 100)}%")
     lines.append("")
 
-    # Produtos detectados
+    # Detected products
     produtos = result.get("produtos_detectados", [])
     if produtos:
         lines.append(f"Produtos identificados ({len(produtos)}):")
@@ -82,7 +86,7 @@ def generate_shelf_report(result: dict) -> str:
     else:
         lines.append("Nenhum produto identificado na imagem.")
 
-    # Slots vazios
+    # Empty slots
     slots = result.get("slots_vazios", {})
     if slots.get("total_estimado", 0) > 0:
         lines.append("")
@@ -90,7 +94,7 @@ def generate_shelf_report(result: dict) -> str:
         if slots.get("descricao"):
             lines.append(f"  {slots['descricao']}")
 
-    # Cruzamento com inventário
+    # Inventory cross-check
     cruzamento = result.get("cruzamento_inventario", {})
     ausentes = cruzamento.get("ausentes_esperados", [])
     if ausentes:
@@ -123,7 +127,7 @@ def generate_shelf_report(result: dict) -> str:
                 f"(mínimo: {c.get('min_quantity', '?')}) [{c.get('status')}]"
             )
 
-    # Ações sugeridas
+    # Suggested actions
     acoes = result.get("acoes_sugeridas", [])
     if acoes:
         lines.append("")

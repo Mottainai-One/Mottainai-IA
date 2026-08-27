@@ -1,7 +1,11 @@
 """
-RAG — Retriever: busca semântica em rag_chunks (MongoDB).
-Usa embeddings locais (sentence-transformers) — zero custo de API.
-Retorna chunks relevantes com score de similaridade cossenoidal.
+RAG — Retriever: semantic search over rag_chunks (MongoDB).
+Uses local embeddings (sentence-transformers) — zero API cost.
+Returns relevant chunks with a cosine similarity score.
+
+Note: the context/source strings built for the LLM prompt (e.g. "Nenhum
+documento relevante...", "[Fonte N — score ...]") are deliberately kept in
+Portuguese, like the agents' SYSTEM_PROMPT.
 """
 from __future__ import annotations
 
@@ -26,22 +30,22 @@ logger = logging.getLogger(__name__)
 
 @lru_cache(maxsize=1)
 def get_embedding_model() -> SentenceTransformer:
-    """Carrega o modelo de embeddings local uma vez (singleton)."""
-    # O modelo é preparado previamente por scripts/generate_embeddings.py e
-    # fica em cache no host. Impedir o fallback de download evita que uma
-    # consulta RAG dependa da rede ou falhe por certificado corporativo.
+    """Loads the local embedding model once (singleton)."""
+    # The model is prepared beforehand by scripts/generate_embeddings.py and
+    # cached on the host. Blocking the download fallback keeps a RAG query
+    # from depending on the network or failing on a corporate certificate.
     return SentenceTransformer(settings.embedding_model, local_files_only=True)
 
 
 def embed(text: str) -> list[float]:
-    """Gera embedding de um texto."""
+    """Generates the embedding for a text."""
     model = get_embedding_model()
     vec = model.encode(text, normalize_embeddings=True)
     return vec.tolist()
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Similaridade cossenoidal entre dois vetores."""
+    """Cosine similarity between two vectors."""
     va, vb = np.array(a), np.array(b)
     denom = np.linalg.norm(va) * np.linalg.norm(vb)
     if denom == 0:
@@ -56,18 +60,18 @@ async def retrieve(
     min_score: float = 0.4,
 ) -> list[dict]:
     """
-    Busca os `top_k` chunks mais relevantes para a query.
+    Fetches the `top_k` chunks most relevant to the query.
 
-    Estratégia: embeddings locais + busca bruta em MongoDB.
-    (Em produção real, usaríamos Atlas Vector Search ou pgvector.)
+    Strategy: local embeddings + brute-force search in MongoDB.
+    (In a real production system, we'd use Atlas Vector Search or pgvector.)
 
-    Retorna lista de dicts com: text, score, documentId, chunk, metadata.
+    Returns a list of dicts with: text, score, documentId, chunk, metadata.
     """
     query_vec = await asyncio.to_thread(embed, query)
 
     db = get_mongo_db()
 
-    # Carrega IDs dos documentos da empresa
+    # Loads the company's document IDs
     doc_ids = [
         doc["_id"]
         async for doc in db.rag_documents.find(
@@ -78,7 +82,7 @@ async def retrieve(
     if not doc_ids:
         return []
 
-    # Carrega chunks com embedding
+    # Loads chunks that have an embedding
     chunks = []
     async for chunk in db.rag_chunks.find(
         {"documentId": {"$in": doc_ids}, "embedding": {"$ne": None}}
@@ -88,7 +92,7 @@ async def retrieve(
     if not chunks:
         return []
 
-    # Calcula scores
+    # Computes scores
     scored = []
     for chunk in chunks:
         score = cosine_similarity(query_vec, chunk["embedding"])
@@ -114,11 +118,11 @@ def _rag_cache_key(query: str, empresa_id: int, top_k: int) -> str:
 
 
 async def _read_rag_cache(cache_key: str) -> Optional[tuple[str, list[dict]]]:
-    """Lê o resultado do RAG do cache. Falha aberta: erro no Redis = cache miss."""
+    """Reads the RAG result from cache. Fail-open: Redis error = cache miss."""
     try:
         cached = await get_redis().get(cache_key)
     except Exception:
-        logger.warning("Cache RAG indisponível (leitura) — seguindo sem cache", exc_info=True)
+        logger.warning("RAG cache unavailable (read) — continuing without cache", exc_info=True)
         return None
     if not cached:
         return None
@@ -127,12 +131,12 @@ async def _read_rag_cache(cache_key: str) -> Optional[tuple[str, list[dict]]]:
 
 
 async def _write_rag_cache(cache_key: str, context: str, sources: list[dict]) -> None:
-    """Grava o resultado do RAG no cache. Falha aberta: erro no Redis não afeta a resposta."""
+    """Writes the RAG result to cache. Fail-open: a Redis error does not affect the response."""
     try:
         payload = json.dumps({"context": context, "sources": sources})
         await get_redis().set(cache_key, payload, ex=settings.rag_cache_ttl_seconds)
     except Exception:
-        logger.warning("Cache RAG indisponível (escrita) — seguindo sem cache", exc_info=True)
+        logger.warning("RAG cache unavailable (write) — continuing without cache", exc_info=True)
 
 
 async def retrieve_with_sources(
@@ -141,13 +145,13 @@ async def retrieve_with_sources(
     top_k: int = 5,
 ) -> tuple[str, list[dict]]:
     """
-    Retorna (contexto_formatado, fontes) para injetar no prompt.
-    As fontes são gravadas em messages.sources para rastreabilidade.
+    Returns (formatted_context, sources) to inject into the prompt.
+    Sources are written to messages.sources for traceability.
 
-    Usa cache no Redis (TTL configurável) para a mesma pergunta na mesma
-    empresa — reduz latência e custo de recomputar embeddings/similaridade.
-    O cache é puramente uma otimização: se o Redis estiver fora do ar, o RAG
-    segue funcionando normalmente, só sem o ganho de velocidade.
+    Uses a Redis cache (configurable TTL) for the same question within the
+    same company — reduces latency and the cost of recomputing
+    embeddings/similarity. The cache is purely an optimization: if Redis is
+    down, RAG keeps working normally, just without the speed gain.
     """
     cache_key = _rag_cache_key(query, empresa_id, top_k)
     cached = await _read_rag_cache(cache_key)

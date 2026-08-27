@@ -1,7 +1,10 @@
 """
-RAG — Fonte externa: Open-Meteo (API pública, sem chave, sem custo).
-Fornece dados climáticos que o Motor Preditivo usa para correlacionar
-com demanda de perecíveis (calor → bebidas/sorvete, chuva → queda de fluxo).
+RAG — External source: Open-Meteo (public API, no key, no cost).
+Provides weather data the Predictive Engine correlates with demand for
+perishables (heat → drinks/ice cream, rain → foot-traffic drop).
+
+Note: interpret_weather_for_demand() returns text injected directly into
+the Predictive Engine's LLM prompt, so its output is kept in Portuguese.
 """
 import httpx
 from datetime import date
@@ -12,15 +15,15 @@ settings = get_settings()
 
 
 async def get_weather_forecast(
-    latitude: float = -23.5505,   # São Paulo como default
+    latitude: float = -23.5505,   # São Paulo, Brazil, as the default
     longitude: float = -46.6333,
     days: int = 7,
 ) -> dict:
     """
-    Consulta previsão do tempo para os próximos `days` dias.
-    Retorna: temperaturas máxima/mínima, precipitação e código de clima.
+    Queries the weather forecast for the next `days` days.
+    Returns: max/min temperatures, precipitation and weather code.
 
-    Fonte: Open-Meteo (https://open-meteo.com) — gratuita, sem API key.
+    Source: Open-Meteo (https://open-meteo.com) — free, no API key required.
     """
     params = {
         "latitude": latitude,
@@ -70,8 +73,9 @@ async def get_weather_forecast(
 
 def interpret_weather_for_demand(forecast: list[dict]) -> str:
     """
-    Interpreta a previsão climática em texto para o Motor Preditivo.
-    Converte dados brutos em insights acionáveis para o estoque.
+    Interprets the weather forecast as text for the Predictive Engine.
+    Converts raw data into actionable stock insights.
+    (Output kept in Portuguese — see module docstring.)
     """
     hot_days = sum(1 for d in forecast if d.get("is_hot"))
     rainy_days = sum(1 for d in forecast if d.get("has_rain"))

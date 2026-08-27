@@ -1,4 +1,4 @@
-"""Rate limit Redis atômico por empresa e usuário."""
+"""Atomic Redis rate limit per company and user."""
 from dataclasses import dataclass
 from time import time
 from uuid import uuid4

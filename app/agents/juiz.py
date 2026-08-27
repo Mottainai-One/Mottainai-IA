@@ -1,14 +1,18 @@
 """
-Agente Juiz — controle de alucinações e qualidade de resposta.
-Obrigatório pelo requisito de anti-alucinação da matéria.
+Judge Agent — hallucination control and response quality.
+Required by the course's anti-hallucination requirement.
 
-Subagentes/capacidades:
-  1. Grounding Check: a resposta é suportada pelas fontes?
-  2. Escopo/Vazamento: a resposta contém dado que o perfil não deveria ver?
-  3. Score de Confiança: 0.0 a 1.0
-  4. Fallback Handler: se reprovado, reformula ou retorna mensagem segura
+Sub-agents/capabilities:
+  1. Grounding Check: is the response supported by the sources?
+  2. Scope/Leak Check: does the response contain data the profile shouldn't see?
+  3. Confidence Score: 0.0 to 1.0
+  4. Fallback Handler: if rejected, rewrite or return a safe message
 
-Roda como nó do grafo logo após o agente de domínio, ANTES de responder ao usuário.
+Runs as a graph node right after the domain agent, BEFORE responding to the user.
+
+Note: JUDGE_PROMPT (and the evaluation input built from it) is deliberately
+kept in Portuguese, like the other agents' SYSTEM_PROMPT — it's part of the
+product's tuned behavior, not developer-facing code.
 """
 import json
 import logging
@@ -48,12 +52,12 @@ Responda SOMENTE em JSON:
 
 
 async def node_agente_juiz(state: MottainaiState) -> MottainaiState:
-    """Nó do Agente Juiz no grafo LangGraph."""
+    """Judge Agent node in the LangGraph graph."""
     agent_response = state.get("agent_response", "")
     user_role = state["user_role"]
     sources = state.get("sources", [])
 
-    # Monta contexto para o juiz
+    # Builds the context for the judge (kept in Portuguese, see module docstring)
     sources_text = "\n".join(
         [f"- {s.get('type')}: {s.get('ref')}" for s in sources]
     ) or "Nenhuma fonte registrada."
@@ -76,12 +80,12 @@ Avalie a resposta conforme as instruções.
         HumanMessage(content=evaluation_input),
     ]
 
-    llm = get_llm(temperature=0.0)  # zero temperatura para avaliação determinística
+    llm = get_llm(temperature=0.0)  # zero temperature for deterministic evaluation
 
     judge_unavailable = False
     try:
         response = await llm.ainvoke(messages)
-        # Extrai JSON da resposta — remove markdown code block se presente
+        # Extracts JSON from the response — strips markdown code block if present
         raw = response.content.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
@@ -89,8 +93,8 @@ Avalie a resposta conforme as instruções.
                 raw = raw[4:]
         evaluation = json.loads(raw.strip())
     except Exception as e:
-        # Fail-closed: sem validação confiável, a resposta não pode ser liberada.
-        logger.error("Agente Juiz encontrou erro interno: %s", e, exc_info=True)
+        # Fail-closed: without reliable validation, the response cannot be released.
+        logger.error("Judge Agent hit an internal error: %s", e, exc_info=True)
         judge_unavailable = True
         evaluation = {
             "approved": False,
@@ -104,13 +108,14 @@ Avalie a resposta conforme as instruções.
     score = evaluation.get("confidence_score", 0.0)
     scope_ok = evaluation.get("scope_ok", True)
     grounding_ok = evaluation.get("grounding_ok", True)
-    # Não confia cegamente no booleano "approved" do modelo — ele já veio
-    # inconsistente com o próprio score em testes reais. O score decide.
+    # Does not blindly trust the model's "approved" boolean — it has come back
+    # inconsistent with its own score in real tests. The score decides.
     approved = evaluation.get("approved", False) and score >= 0.7
 
-    # Reprovado: nunca usa "revised_response" — o próprio juiz pode reformular
-    # mantendo conteúdo fora de escopo ou não fundamentado. Sempre cai numa
-    # mensagem segura fixa, escolhida pelo motivo da reprovação (fail-closed).
+    # Rejected: never uses "revised_response" — the judge itself can rewrite
+    # while still keeping out-of-scope or ungrounded content. Always falls back
+    # to one of a few fixed, safe messages, chosen by the rejection reason
+    # (fail-closed). These fallback strings are user-facing, kept in Portuguese.
     if not approved:
         if judge_unavailable:
             final_agent_response = "Não tenho informações suficientes para responder com segurança. Por favor, reformule sua pergunta."
@@ -132,7 +137,7 @@ Avalie a resposta conforme as instruções.
     else:
         final_agent_response = agent_response
 
-    # Salva avaliação no MongoDB (prompt_evaluations)
+    # Saves the evaluation to MongoDB (prompt_evaluations)
     from app.database.mongo import get_mongo_db
     from datetime import datetime, timezone
     db = get_mongo_db()

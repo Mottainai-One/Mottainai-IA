@@ -1,6 +1,11 @@
 """
-Observabilidade — Coleta de métricas por execução.
-Grava em MongoDB (metrics) e calcula estimativa de custo.
+Observability — per-execution metrics collection.
+Writes to MongoDB (metrics) and computes cost estimates.
+
+Note: the dict keys/values returned by get_metrics_summary() (e.g.
+"periodo_dias", "custo_total_usd", "qualidade", "escalamento") are the
+GET /metrics/summary API contract, asserted by tests — they are kept in
+Portuguese, not translated as part of this pass.
 """
 import time
 from datetime import datetime, timezone
@@ -25,16 +30,16 @@ async def record_execution_metrics(
     node_latencies_ms: dict[str, float] | None = None,
 ) -> None:
     """
-    Persiste métricas de execução no MongoDB.
+    Persists execution metrics to MongoDB.
     """
     if isinstance(empresa_id, bool) or not isinstance(empresa_id, int) or empresa_id < 1:
-        raise ValueError("empresa_id deve ser um inteiro positivo.")
+        raise ValueError("empresa_id must be a positive integer.")
 
     db = get_mongo_db()
     settings = get_settings()
 
-    # No plano gratuito Groq, as tarifas padrão são zero. Para comparação acadêmica,
-    # a equipe pode configurar taxas explícitas no ambiente sem alterar o código.
+    # On the Groq free tier, default rates are zero. For academic comparison,
+    # the team can configure explicit rates in the environment without changing the code.
     cost_input = (input_tokens / 1_000_000) * settings.llm_input_cost_per_million_usd
     cost_output = (output_tokens / 1_000_000) * settings.llm_output_cost_per_million_usd
     estimated_cost = round(cost_input + cost_output, 6)
@@ -63,8 +68,8 @@ async def record_execution_metrics(
 
 async def get_metrics_summary(empresa_id: int, days: int = 7) -> dict:
     """
-    Retorna sumário de métricas + estimativa de custo para 100/1000 usuários semanais.
-    Exigido pelo requisito de observabilidade/SRE da matéria.
+    Returns a metrics summary + cost estimate for 100/1000 weekly users.
+    Required by the course's observability/SRE requirement.
     """
     from datetime import timedelta
     db = get_mongo_db()
@@ -81,8 +86,8 @@ async def get_metrics_summary(empresa_id: int, days: int = 7) -> dict:
     latencies = [m["latency"] for m in metrics if m.get("latency")]
     judge_scores = [m["judgeScore"] for m in metrics if m.get("judgeScore") is not None]
 
-    # Por agente: volume, latência, erros e qualidade (score do Juiz) individualizados —
-    # permite localizar qual agente concentra lentidão, falhas ou respostas reprovadas.
+    # Per agent: individualized volume, latency, errors and quality (Judge score) —
+    # lets you pinpoint which agent concentrates slowness, failures or rejected responses.
     by_agent: dict[str, dict] = {}
     for m in metrics:
         agent = m.get("agent", "unknown")
@@ -110,7 +115,7 @@ async def get_metrics_summary(empresa_id: int, days: int = 7) -> dict:
         for agent, v in by_agent.items()
     }
 
-    # Erro: exceções/rejeições do pipeline ou resposta reprovada pelo Juiz.
+    # Error: pipeline exceptions/rejections or a response rejected by the Judge.
     low_quality = sum(1 for s in judge_scores if s < 0.7)
     failed_requests = sum(1 for m in metrics if m.get("status") == "error")
     error_count = failed_requests + low_quality
@@ -122,14 +127,14 @@ async def get_metrics_summary(empresa_id: int, days: int = 7) -> dict:
             node_totals.setdefault(node, []).append(duration)
     interagent_latency = {node: round(sum(values) / len(values), 2) for node, values in node_totals.items()}
 
-    # Resolução é uma resposta concluída e aprovada pelo Juiz.
+    # A resolution is a completed response approved by the Judge.
     resolved_requests = sum(
         1 for m in metrics
         if m.get("status") == "completed" and (m.get("judgeScore") or 0) >= 0.7
     )
     cost_per_resolution = total_cost / resolved_requests if resolved_requests else None
 
-    # Escalamento para 100/1000 usuários semanais (projeção)
+    # Scaling projection for 100/1000 weekly users
     cost_per_request = total_cost / total_requests if total_requests else 0
     avg_sessions_per_user = max(1, total_requests // max(1, days * 10))
 
@@ -142,14 +147,14 @@ async def get_metrics_summary(empresa_id: int, days: int = 7) -> dict:
         "estimated_cost_usd": round(cost_per_request * 1000 * avg_sessions_per_user, 4),
     }
 
-    # ROI: assumindo que cada ação evitada de descarte = R$ 15 de economia média
+    # ROI: assuming each avoided disposal action = R$ 15 average savings
     alerts_resolved = await db.agent_executions.count_documents({
         "empresaId": empresa_id,
         "createdAt": {"$gte": since},
         "agent": "motor_preditivo",
         "status": "completed",
     })
-    roi_estimate = alerts_resolved * 15.0  # R$ por ação evitada
+    roi_estimate = alerts_resolved * 15.0  # R$ per avoided action
 
     return {
         "periodo_dias": days,
@@ -186,7 +191,7 @@ async def get_metrics_summary(empresa_id: int, days: int = 7) -> dict:
 
 
 def _percentile(values: list[float], pct: int) -> float:
-    """Percentil por interpolação linear (nearest-rank simplificado), sem dependências extras."""
+    """Percentile via linear interpolation (simplified nearest-rank), no extra dependencies."""
     if not values:
         return 0.0
     ordered = sorted(values)

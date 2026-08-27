@@ -1,4 +1,4 @@
-"""Dependências compartilhadas pelos agentes, sem montar o grafo."""
+"""Dependencies shared by the agents, without assembling the graph."""
 from __future__ import annotations
 
 from typing import TypedDict
@@ -41,7 +41,7 @@ class MottainaiState(TypedDict):
 
 
 def get_llm_model_label() -> str:
-    """Identificador seguro do provedor/modelo para métricas."""
+    """Safe provider/model identifier for metrics."""
     return settings.llm_model_label
 
 
@@ -58,7 +58,7 @@ def _build_llm(temperature: float) -> BaseChatModel:
 
     if settings.llm_provider == "ollama":
         if not settings.ollama_api_key:
-            raise RuntimeError("OLLAMA_API_KEY não configurada")
+            raise RuntimeError("OLLAMA_API_KEY not configured")
         return ChatOpenAI(
             api_key=settings.ollama_api_key,
             base_url=settings.ollama_base_url.rstrip("/"),
@@ -69,7 +69,7 @@ def _build_llm(temperature: float) -> BaseChatModel:
         )
 
     if not settings.groq_api_key:
-        raise RuntimeError("GROQ_API_KEY não configurada")
+        raise RuntimeError("GROQ_API_KEY not configured")
     return ChatGroq(
         api_key=settings.groq_api_key,
         model=settings.groq_model,
@@ -81,11 +81,11 @@ def _build_llm(temperature: float) -> BaseChatModel:
 
 def get_llm(temperature: float = 0.3) -> Runnable:
     """
-    Retorna o provedor de texto configurado, com novas tentativas automáticas
-    (backoff exponencial + jitter) em falha transitória do provedor — timeout,
-    erro de conexão ou 5xx. Não muda o comportamento em caso de sucesso: mesma
-    resposta, mesmo prompt, só evita falhar por uma instabilidade passageira do
-    provedor externo.
+    Returns the configured text provider, with automatic retries
+    (exponential backoff + jitter) on transient provider failure — timeout,
+    connection error or 5xx. Does not change behavior on success: same
+    response, same prompt, it only avoids failing on a temporary hiccup of
+    the external provider.
     """
     llm = _build_llm(temperature)
     return llm.with_retry(stop_after_attempt=settings.llm_max_retries, wait_exponential_jitter=True)

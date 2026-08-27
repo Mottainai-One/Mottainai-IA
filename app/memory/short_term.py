@@ -1,4 +1,9 @@
-"""Persistência e ciclo de vida das sessões de conversa."""
+"""Persistence and lifecycle of conversation sessions.
+
+Note: the SessionExpiredError/SessionOwnershipError messages below are
+user-facing — interfaces/api/main.py returns str(exc) directly as the HTTP
+error detail, so they are kept in Portuguese like the rest of the chat UX.
+"""
 from datetime import datetime, timedelta, timezone
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -8,11 +13,11 @@ from app.database.mongo import get_mongo_db
 
 
 class SessionExpiredError(Exception):
-    """A sessão existe, mas excedeu o período permitido de inatividade."""
+    """The session exists, but exceeded the allowed inactivity period."""
 
 
 class SessionOwnershipError(Exception):
-    """A sessão não pertence à empresa ou usuário informado."""
+    """The session does not belong to the given company or user."""
 
 
 def _utcnow() -> datetime:
@@ -29,7 +34,7 @@ def _as_utc(value: datetime) -> datetime:
 
 
 async def load_history(session_id: str, limit: int = 20) -> list[BaseMessage]:
-    """Carrega as últimas mensagens de uma sessão como mensagens LangChain."""
+    """Loads the latest messages of a session as LangChain messages."""
     db = get_mongo_db()
     conv = await db.conversations.find_one({"sessionId": session_id})
     if not conv:
@@ -61,7 +66,7 @@ async def save_message(
     output_tokens: int | None = None,
     sources: list[dict] | None = None,
 ) -> None:
-    """Persiste mensagem e renova a última interação da sessão ativa."""
+    """Persists the message and renews the active session's last interaction."""
     db = get_mongo_db()
     conv = await db.conversations.find_one({"sessionId": session_id, "status": "active"})
     if not conv:
@@ -83,7 +88,7 @@ async def save_message(
 async def get_or_create_conversation(
     session_id: str, empresa_id: int, usuario_id: int, agent: str = "pending"
 ) -> dict:
-    """Cria ou retoma uma sessão ativa, validando ownership e inatividade."""
+    """Creates or resumes an active session, validating ownership and inactivity."""
     db = get_mongo_db()
     now = _utcnow()
     conv = await db.conversations.find_one({"sessionId": session_id})
@@ -110,7 +115,7 @@ async def get_or_create_conversation(
 
 
 async def list_conversations(empresa_id: int, usuario_id: int, limit: int = 20) -> list[dict]:
-    """Lista as sessões mais recentes do usuário, sem expor mensagens."""
+    """Lists the user's most recent sessions, without exposing messages."""
     db = get_mongo_db()
     cursor = db.conversations.find(
         {"empresaId": empresa_id, "usuarioId": usuario_id},
@@ -120,7 +125,7 @@ async def list_conversations(empresa_id: int, usuario_id: int, limit: int = 20) 
 
 
 async def get_conversation(session_id: str, empresa_id: int, usuario_id: int) -> dict | None:
-    """Obtém sessão para o dono legítimo, inclusive se já encerrada."""
+    """Gets the session for its legitimate owner, even if already closed."""
     db = get_mongo_db()
     conv = await db.conversations.find_one({"sessionId": session_id})
     if not conv:
@@ -131,7 +136,7 @@ async def get_conversation(session_id: str, empresa_id: int, usuario_id: int) ->
 
 
 async def close_conversation(session_id: str, empresa_id: int, usuario_id: int) -> bool:
-    """Encerra uma sessão do próprio usuário; mensagens permanecem para auditoria."""
+    """Closes a session belonging to the user; messages remain for audit purposes."""
     db = get_mongo_db()
     result = await db.conversations.update_one(
         {"sessionId": session_id, "empresaId": empresa_id, "usuarioId": usuario_id, "status": "active"},
