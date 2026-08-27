@@ -42,8 +42,13 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     redis_password: str = ""
     redis_max_connections: int = 20
-    redis_connect_timeout_seconds: float = 2.0
-    redis_socket_timeout_seconds: float = 2.0
+    # 2s was too tight in practice: Docker Desktop's networking on Windows can
+    # add enough latency to the first connection that it consistently timed
+    # out at ~2.01s even against a healthy local container (verified live).
+    # Redis is on the guardrail_entrada rate-limit path, which is NOT
+    # fail-open, so a too-tight timeout here fails every chat message.
+    redis_connect_timeout_seconds: float = 6.0
+    redis_socket_timeout_seconds: float = 6.0
     redis_health_check_interval_seconds: int = 30
     rate_limit_window_seconds: int = 60
     notification_ttl_seconds: int = 604800

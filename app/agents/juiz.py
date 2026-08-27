@@ -13,6 +13,14 @@ Runs as a graph node right after the domain agent, BEFORE responding to the user
 Note: JUDGE_PROMPT (and the evaluation input built from it) is deliberately
 kept in Portuguese, like the other agents' SYSTEM_PROMPT — it's part of the
 product's tuned behavior, not developer-facing code.
+
+Note: the judge's own confidence score is not fully deterministic even at
+temperature 0 — observed live, the exact same (grounded, correct) response
+scored 0.35 on one evaluation and 0.86 on an identical retry. Rather than
+raising the approval threshold's tolerance for that noise, a rejected
+evaluation gets exactly one independent re-evaluation before falling back
+to a safe message (see _run_judge_evaluation below) — this only adds a
+second LLM call on the rejection path, not on every message.
 """
 import json
 import logging
@@ -51,6 +59,42 @@ Responda SOMENTE em JSON:
 """
 
 
+async def _run_judge_evaluation(llm, messages: list) -> tuple[dict, bool]:
+    """
+    Runs a single Judge evaluation call.
+    Returns (evaluation, judge_unavailable) — judge_unavailable is True only
+    for a technical failure (bad JSON, provider error), never for a genuine
+    rejection.
+    """
+    try:
+        response = await llm.ainvoke(messages)
+        # Extracts JSON from the response — strips markdown code block if present
+        raw = response.content.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        return json.loads(raw.strip()), False
+    except Exception as e:
+        # Fail-closed: without reliable validation, the response cannot be released.
+        logger.error("Judge Agent hit an internal error: %s", e, exc_info=True)
+        return {
+            "approved": False,
+            "confidence_score": 0.0,
+            "grounding_ok": False,
+            "scope_ok": False,
+            "issues": [f"judge_unavailable: {type(e).__name__}"],
+            "revised_response": None,
+        }, True
+
+
+def _approved(evaluation: dict) -> tuple[bool, float]:
+    score = evaluation.get("confidence_score", 0.0)
+    # Does not blindly trust the model's "approved" boolean — it has come back
+    # inconsistent with its own score in real tests. The score decides.
+    return evaluation.get("approved", False) and score >= 0.7, score
+
+
 async def node_agente_juiz(state: MottainaiState) -> MottainaiState:
     """Judge Agent node in the LangGraph graph."""
     agent_response = state.get("agent_response", "")
@@ -82,35 +126,23 @@ Avalie a resposta conforme as instruções.
 
     llm = get_llm(temperature=0.0)  # zero temperature for deterministic evaluation
 
-    judge_unavailable = False
-    try:
-        response = await llm.ainvoke(messages)
-        # Extracts JSON from the response — strips markdown code block if present
-        raw = response.content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        evaluation = json.loads(raw.strip())
-    except Exception as e:
-        # Fail-closed: without reliable validation, the response cannot be released.
-        logger.error("Judge Agent hit an internal error: %s", e, exc_info=True)
-        judge_unavailable = True
-        evaluation = {
-            "approved": False,
-            "confidence_score": 0.0,
-            "grounding_ok": False,
-            "scope_ok": False,
-            "issues": [f"judge_unavailable: {type(e).__name__}"],
-            "revised_response": None,
-        }
+    evaluation, judge_unavailable = await _run_judge_evaluation(llm, messages)
+    approved, score = _approved(evaluation)
 
-    score = evaluation.get("confidence_score", 0.0)
+    # The judge's own score is not fully deterministic even at temperature 0
+    # (see module docstring) — a single rejection isn't strong evidence the
+    # response is actually bad. Give it one independent re-evaluation before
+    # falling back to a safe message.
+    if not approved:
+        retry_evaluation, retry_unavailable = await _run_judge_evaluation(llm, messages)
+        retry_approved, retry_score = _approved(retry_evaluation)
+        if retry_approved or (judge_unavailable and not retry_unavailable):
+            evaluation, judge_unavailable, approved, score = (
+                retry_evaluation, retry_unavailable, retry_approved, retry_score,
+            )
+
     scope_ok = evaluation.get("scope_ok", True)
     grounding_ok = evaluation.get("grounding_ok", True)
-    # Does not blindly trust the model's "approved" boolean — it has come back
-    # inconsistent with its own score in real tests. The score decides.
-    approved = evaluation.get("approved", False) and score >= 0.7
 
     # Rejected: never uses "revised_response" — the judge itself can rewrite
     # while still keeping out-of-scope or ungrounded content. Always falls back
