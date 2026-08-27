@@ -1,178 +1,326 @@
 # Mottainai IA Layer
 
-API multiagente (FastAPI + LangChain + LangGraph) que orquestra agentes de IA sobre o banco operacional do Mottainai — um sistema de gestão preditiva de estoque para varejo, com foco em reduzir desperdício e perdas.
+Camada de IA multiagente para gestão preditiva de estoque e suporte operacional em varejo. O projeto combina FastAPI, LangGraph, LLMs, visão computacional, PostgreSQL, MongoDB e Redis para entregar respostas contextualizadas, controle de acesso e rastreabilidade de decisões.
 
-PostgreSQL é a fonte da verdade do negócio (vendas, estoque, lotes, alertas). MongoDB é a camada de IA (sessões, memória, RAG, auditoria). Redis cuida de rate limit e notificações. O LLM de conversa roda via Groq (gratuito) por padrão, com Ollama local como alternativa 100% offline.
 
-## Sobre o projeto
+<div align="center">
 
-Cada tipo de usuário do Mottainai conversa com um agente diferente, todos atrás do mesmo endpoint `/chat`:
 
-| Papel | Agente acionado | Ajuda com |
-|---|---|---|
-| `CLIENTE` | Cliente / FAQ | Promoções, lojas, fidelidade, sustentabilidade |
-| `ESTOQUISTA` / `GERENTE` | Funcionário | Estoque, alertas, validade, procedimentos |
-| `DONO` | Dono | KPIs, faturamento, perdas, analytics, ROI |
 
-Um Motor Preditivo autônomo (não reativo — roda por trigger/schedule) cruza histórico de vendas com previsão do tempo (Open-Meteo) para prever demanda, detectar risco de perda e sugerir ações (promoção relâmpago, transferência, doação, descarte). Um Agente de Visão analisa fotos de prateleira via Gemini. Um Agente Juiz audita toda resposta antes dela sair. Um Agente de Governança audita o sistema de forma assíncrona.
+```diff
++███╗   ███╗  ██████╗  ████████╗ ████████╗  █████╗  ██╗ ███╗   ██╗  █████╗  ██╗      █████╗  ██╗ 
++████╗ ████║ ██╔═══██╗ ╚══██╔══╝ ╚══██╔══╝ ██╔══██╗ ██║ ████╗  ██║ ██╔══██╗ ██║     ██╔══██╗ ██║ 
++██╔████╔██║ ██║   ██║    ██║       ██║    ███████║ ██║ ██╔██╗ ██║ ███████║ ██║     ███████║ ██║ 
++██║╚██╔╝██║ ██║   ██║    ██║       ██║    ██╔══██║ ██║ ██║╚██╗██║ ██╔══██║ ██║     ██╔══██║ ██║ 
++██║ ╚═╝ ██║ ╚██████╔╝    ██║       ██║    ██║  ██║ ██║ ██║ ╚████║ ██║  ██║ ██║     ██║  ██║ ██║ 
++╚═╝     ╚═╝  ╚═════╝     ╚═╝       ╚═╝    ╚═╝  ╚═╝ ╚═╝ ╚═╝  ╚═══╝ ╚═╝  ╚═╝ ╚═╝     ╚═╝  ╚═╝ ╚═╝
+```
 
-## Requisitos do projeto — o que está implementado
 
-| Requisito | Onde |
-|---|---|
-| API FastAPI | `interfaces/api/main.py` |
-| LLM sem custo (Groq/Ollama, sem gasto da escola) | `config/settings.py` — `LLM_PROVIDER=groq\|ollama\|ollama_local` |
-| 5+ agentes multiagente | 7: Cliente, FAQ, Funcionário, Dono, Motor Preditivo, Visão, Juiz — orquestrados pelo Supervisor |
-| LangChain | Todos os agentes usam `ChatGroq`/`ChatOpenAI` (`app/agents/runtime.py`) |
-| LangGraph | `app/agents/supervisor.py` — `StateGraph` com nós e arestas condicionais |
-| Sessão por usuário | JWT (`sub`/`empresa_id`/`role`) + `conversations` no MongoDB, ownership validado |
-| Memória de longo prazo | `app/memory/long_term.py` → coleção `memories` |
-| MCP | `POST /mcp` — `initialize`, `tools/list`, `tools/call` (`app/integrations/mcp_a2a.py`) |
-| A2A | `POST /a2a` + `/.well-known/agent-card.json` (descoberta) |
-| RAG com fontes indicadas | `app/rag/retriever.py` (MongoDB) — toda resposta traz `sources` |
-| Fonte externa consumida | Open-Meteo (API pública de clima) via MCP no Motor Preditivo |
-| Agente Juiz anti-alucinação | `app/agents/juiz.py` — grounding, escopo, confidence score, fail-closed de verdade |
-| Guardrail de entrada/saída | `app/guardrails/entrada.py` + `saida.py` |
-| Observabilidade: custo, latência, erros, ROI, custo/resolução, projeção 100/1000 usuários | `GET /metrics/summary` (`app/observability/metrics.py`) |
-| Arquitetura de alto nível | Seção abaixo e [ARQUITETURA.md](ARQUITETURA.md) (diagrama completo) |
+Assistente pessoal de **finanças e agenda** construído com LangChain + LangGraph.  
+O sistema usa uma arquitetura multi-agente onde cada agente tem uma responsabilidade bem definida:  
+classificar a intenção, processar o domínio correto e formatar a resposta final para o usuário.
+
+![Python](https://img.shields.io/badge/Python-3.13+-3776AB?style=flat&logo=python&logoColor=white)
+![LangChain](https://img.shields.io/badge/LangChain-1.2-1C3C3C?style=flat&logo=langchain&logoColor=white)
+![LangGraph](https://img.shields.io/badge/LangGraph-1.1-FF6B35?style=flat)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-psycopg2-336791?style=flat&logo=postgresql&logoColor=white)
+![MongoDB](https://img.shields.io/badge/MongoDB-pymongo-47A248?style=flat&logo=mongodb&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-pyredis-FF4438?style=flat&logo=redis&logoColor=white)
+![Qdrant](https://img.shields.io/badge/Qdrant-qdrant--client-DC244C?style=flat&logo=qdrant&logoColor=white)
+
+</div>
+
+---
+
+## Visão Geral
+O Mottainai IA Layer atua como uma API de atendimento inteligente para diferentes perfis de usuário dentro do ambiente da loja:
+
+- `ESTOQUISTA`: acompanhamento de estoque, vencimentos e alertas operacionais.
+- `GERENTE`: consultas operacionais mais amplas, sugestões e acompanhamento de KPI.
+- `DONO`: visão estratégica, faturamento, perdas e diagnósticos executivos.
+- `CLIENTE`: suporte de vendas, promoções, loja e FAQ.
+
+O fluxo principal da aplicação segue esta sequência:
+
+```text
+guardrail de entrada → sessão/contexto → supervisor → agente especializado → juiz → guardrail de saída
+```
+
+O Juiz é configurado em modo fail-closed: se a resposta não for adequada, ela não é aprovada. Isso reduz risco de alucinação, vazamento de dados e respostas fora do escopo.
+
+## O que o sistema faz
+
+### Atendimento multiagente
+
+A infraestrutura roteia a conversa para o agente correto com base no perfil do usuário e na intenção da mensagem.
+
+### Gestão operacional
+
+O sistema consulta e manipula dados de estoque, eventos, alertas e indicadores relevantes para a operação da loja.
+
+### Motor preditivo
+
+O módulo de predição gera recomendações com base em históricos e contexto do negócio, ajudando na antecipação de compra, risco de perda e ações de reposição.
+
+### Análise de prateleira
+
+A API também aceita imagens de prateleira para análise visual com Gemini, identificando ocupação, produtos detectados, vazio visual e sugestões de ação.
+
+### Governança e auditoria
+
+A aplicação registra métricas, latências, execução por agente e relatórios de conformidade para apoiar observabilidade e controle operacional.
 
 ## Arquitetura
 
-Fluxo fixo de toda mensagem de chat (não muda entre agentes) — versão completa com diagrama de todos os agentes lado a lado em [ARQUITETURA.md](ARQUITETURA.md):
-
+```text
+Requisição do usuário
+        │
+        ▼
+┌──────────────────────────────────────────────┐
+│ Guardrail de entrada                         │
+│ - sanitização e validação                    │
+│ - rate limit                                 │
+│ - bloqueio de prompt injection              │
+└──────────────────────┬───────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────┐
+│ Contexto e sessão                            │
+│ - histórico em MongoDB                       │
+│ - memória e perfil do usuário                │
+│ - controle de empresa/usuário                │
+└──────────────────────┬───────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────┐
+│ Supervisor (LangGraph)                       │
+│ - roteia para agente certo                  │
+│ - considera role + intenção                 │
+└───────┬───────────────┬──────────────────────┘
+        │               │
+        ▼               ▼
+┌───────────────┐ ┌───────────────┐
+│ Agente        │ │ Agente        │
+│ Funcionário   │ │ Dono / Cliente│
+│ - loja        │ │ - KPI         │
+│ - estoque     │ │ - faturamento │
+│ - alertas     │ │ - estratégias │
+└───────┬───────┘ └───────┬───────┘
+        │                   │
+        └───────────┬───────┘
+                    ▼
+        ┌────────────────────┐
+        │ Juiz / Validação   │
+        │ - grounding        │
+        │ - escopo           │
+        │ - confiança        │
+        └──────────┬─────────┘
+                   ▼
+        ┌────────────────────┐
+        │ Guardrail de saída │
+        │ - revisão final    │
+        │ - segurança        │
+        └────────────────────┘
 ```
-Requisição (POST /chat)
-   │
-   ▼
-Guardrail de entrada  ──(bloqueado)──▶ retorna erro ao usuário
-   │  sanitização, anti prompt-injection, rate limit (Redis)
-   ▼
-Load Context (MongoDB)
-   │  histórico da sessão + memória de longo prazo
-   ▼
-Supervisor (LangGraph)
-   │  roteia por perfil + intenção → não usa RAG nem tools
-   ├──▶ Agente Cliente / FAQ  (RAG)
-   ├──▶ Agente Funcionário    (PostgreSQL + Redis + RAG)
-   ├──▶ Agente Dono           (PostgreSQL analytics + RAG)
-   └──▶ Motor Preditivo       (PostgreSQL + Open-Meteo via MCP)
-   │
-   ▼
-Agente Juiz
-   │  grounding check, escopo, confidence score (0.0–1.0)
-   │  reprovado (<0.7) → mensagem segura fixa, nunca o texto original
-   ▼
-Guardrail de saída
-   │  bloqueia PII/dado sensível residual, trunca resposta longa
-   ▼
-Resposta ao usuário
-   │
-   ├─ (async) Métricas → MongoDB (metrics)
-   └─ (async) Agente de Governança → auditoria, controle de acesso
+
+## Stack Tecnológico
+
+- Python 3.13+
+- FastAPI para API HTTP
+- LangChain + LangGraph para orquestração multiagente
+- Groq / Llama 3.3 para inferência principal
+- Gemini para análise visual da prateleira
+- PostgreSQL para dados operacionais
+- MongoDB para histórico, memória e sessões
+- Redis para rate limit e apoio em tempo real
+- Sentence Transformers para embeddings locais
+- Pydantic para validação de schemas
+- Docker Compose para provisionamento local
+
+## Estrutura do Projeto
+
+```text
+mottainai-ia/
+├── app/
+│   ├── agents/               # Supervisores, agentes e nós LangGraph
+│   ├── database/             # Clientes PostgreSQL, MongoDB e Redis
+│   ├── guardrails/           # Validação de entrada e saída
+│   ├── integrations/         # Integrações MCP e A2A
+│   ├── memory/               # Histórico, memória e sessão
+│   ├── observability/        # Métricas, execução e auditoria
+│   ├── rag/                  # Recuperação de conhecimento e fontes externas
+│   ├── tools/                # Ferramentas de domínio
+│   ├── __init__.py
+│   ├── config.py             # Compatibilidade de importação
+│   └── main.py               # Entrada compatível
+├── config/
+│   └── settings.py           # Configuração central por ambiente
+├── interfaces/
+│   └── api/
+│       └── main.py           # API principal FastAPI
+├── tests/
+│   └── ...                   # Testes de boundary checks e comportamento
+├── scripts/
+│   └── ...                   # Scripts de manutenção e integração
+├── AGENTS.md                 # Convenções do projeto
+├── ARQUITETURA.md            # Arquitetura de alto nível do sistema
+├── Dockerfile
+├── docker-compose.yml
+├── pyproject.toml
+├── requirements.txt
+├── start.sh
+├── README.md
+└── .env.example             # Modelo de variáveis de ambiente
 ```
 
-### Stack
+## Pré-requisitos
 
-| Camada | Tecnologia |
-|---|---|
-| API | FastAPI, porta 8000 (ou outra, configurável) |
-| Orquestração | LangChain + LangGraph |
-| LLM de conversa | Groq (`openai/gpt-oss-120b`, grátis) — ou Ollama local/cloud |
-| Visão computacional | Gemini (`gemini-2.5-flash`) |
-| Banco operacional | PostgreSQL 15.7 — schema `mottainai` (fonte da verdade) |
-| Camada de IA | MongoDB 7 — sessões, memória, RAG, auditoria (22 coleções) |
-| Rate limit / notificações | Redis 7 |
-| Embeddings (RAG) | `sentence-transformers/all-MiniLM-L6-v2`, local |
-| Fonte externa | Open-Meteo (gratuita, CC BY 4.0) |
+Antes de rodar a aplicação, você precisa ter instalado:
 
-## Como rodar
+- Python 3.13+
+- PostgreSQL 15+
+- MongoDB 7+
+- Redis 7+
+- Docker e Docker Compose (opcional, mas recomendado para bancos locais)
+- Chaves de API para os provedores de IA utilizados
 
-Pré-requisitos: Python 3.13 x64, Docker Desktop (ou Postgres/Mongo/Redis nativos), e uma chave da Groq (grátis em [console.groq.com](https://console.groq.com)) ou Ollama instalado para rodar 100% local.
+## Configuração
+
+Crie um arquivo `.env` a partir do modelo do projeto e ajuste os valores locais:
+
+```env
+GROQ_API_KEY=
+GROQ_MODEL=llama-3.3-70b-versatile
+GEMINI_API_KEY=
+GEMINI_VISION_MODEL=gemini-1.5-flash
+POSTGRES_DSN=postgresql+asyncpg://mottainai:mottainai@localhost:5432/mottainai
+MONGO_URI=mongodb://localhost:27017
+MONGO_DB=mottainai
+REDIS_URL=redis://localhost:6379/0
+MCP_SHARED_TOKEN=
+A2A_SHARED_TOKEN=
+PUBLIC_BASE_URL=http://localhost:8000
+ENV=development
+LOG_LEVEL=INFO
+```
+
+> O projeto também aceita `DATABASE_URL` e `MONGO_URL` como aliases de compatibilidade.
+
+## Instalação
+
+No Windows, em PowerShell:
 
 ```powershell
-# 1. Ambiente Python
 py -3.13 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-
-# 2. Configuração
-Copy-Item .env.example .env
-notepad .env   # preencha GROQ_API_KEY, JWT_SECRET (32+ chars), senhas dos bancos
-
-# 3. Bancos de dados (Postgres, Mongo, Redis — via Docker ou nativos)
-#    Aplique o schema oficial em Postgres novo e vazio:
-psql -h 127.0.0.1 -d mottainai --single-transaction --set ON_ERROR_STOP=1 -f scripts/sql/mottainai-v6.schema.sql
-#    Prepare o MongoDB (índices; --seed-demo para dados de exemplo de RAG):
-.\.venv\Scripts\python.exe scripts\setup_mongo.py --seed-demo
-
-# 4. Cache de embeddings (uma vez, precisa de internet na primeira execução)
-.\.venv\Scripts\python.exe -c "from sentence_transformers import SentenceTransformer as S; S('all-MiniLM-L6-v2')"
-.\.venv\Scripts\python.exe scripts\generate_embeddings.py   # se usou --seed-demo
-
-# 5. Subir a API
-.\.venv\Scripts\python.exe -m uvicorn interfaces.api.main:app --host 127.0.0.1 --port 8000
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-Scripts prontos em `scripts/windows/*.ps1` automatizam os passos acima (subir dependências, aplicar schema, gerar token de teste, chat interativo pelo terminal). Rode-os de dentro do PowerShell, na raiz do projeto — nunca por duplo clique no arquivo.
+No Linux/macOS:
 
-Validar:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/livez     # {"status":"alive"}
-Invoke-RestMethod http://127.0.0.1:8000/readyz    # postgres/mongo/redis "ok"
+```bash
+python3.13 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-Conversar direto pelo terminal:
+## Execução
 
-```powershell
-.\scripts\windows\Chat-Interactive.ps1 -Role CLIENTE
+### Iniciar a API
+
+```bash
+python -m uvicorn interfaces.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### Regras de segurança
+### Iniciar bancos com Docker Compose
 
-- Gere segredos **novos** por máquina (`JWT_SECRET`, `MCP_SHARED_TOKEN`, `A2A_SHARED_TOKEN`, senhas de banco). Nunca copie `.env` de outra máquina nem versione credenciais.
-- `MCP_EMPRESA_ID` e `A2A_EMPRESA_ID` em `0` mantêm essas integrações bloqueadas por padrão — só habilite com necessidade real, e com token forte configurado.
-- Os bancos em Docker devem escutar apenas em `127.0.0.1`, nunca expostos na rede local.
+```bash
+docker compose up -d postgres mongo redis
+```
 
-## Endpoints principais
+### Endpoints principais
 
-| Rota | Descrição |
-|---|---|
-| `POST /chat` | Chat multiagente (autenticado) |
-| `GET /chat/sessions` / `GET /chat/history/{id}` | Sessões e histórico do usuário autenticado |
-| `POST /chat/sessions/{id}/close` | Encerra uma sessão |
-| `POST /motor-preditivo/trigger` | Aciona o motor preditivo (role `DONO`) |
-| `POST /shelf/analyze` | Análise de prateleira por foto (Visão) |
-| `GET /metrics/summary` | Observabilidade: custo, latência, erros, ROI (role `DONO`) |
-| `GET /audit/report` | Relatório de conformidade e auditoria (role `DONO`) |
-| `POST /mcp` | Transporte MCP (JSON-RPC) |
-| `POST /a2a` + `GET /.well-known/agent-card.json` | Protocolo A2A |
-| `GET /livez` / `GET /readyz` | Health checks |
+Acesse a documentação interativa em:
+
+- `http://localhost:8000/docs`
+- `http://localhost:8000/redoc`
+
+Principais rotas:
+
+- `POST /chat` — mensagem do usuário para o agente de IA
+- `GET /chat/history/{session_id}` — histórico da sessão
+- `GET /chat/sessions` — listagem de sessões do usuário
+- `POST /chat/sessions/{session_id}/close` — encerramento da sessão
+- `POST /motor-preditivo/trigger` — execução manual do motor preditivo
+- `POST /shelf/analyze` — análise visual de prateleira
+- `GET /metrics/summary` — métricas e observabilidade
+- `GET /audit/report` — relatório de conformidade e auditoria
+- `POST /mcp` — transport HTTP para integrações MCP
+- `POST /a2a` — integração com agentes A2A
+- `GET /.well-known/agent-card.json` — descoberta de agentes
+- `GET /health`, `GET /livez`, `GET /readyz` — health checks e readiness
+
+## Fluxo de execução da IA
+
+O sistema segue uma abordagem defensiva e orientada a controle:
+
+1. Recebe a mensagem do usuário.
+2. Valida e sanitiza a entrada.
+3. Carrega contexto e histórico da sessão.
+4. Roteia para o agente mais adequado.
+5. Executa a lógica de domínio.
+6. Valida a resposta no Juiz.
+7. Faz revisão final do guardrail de saída.
+8. Responde ao cliente com rastreabilidade e métrica de execução.
+
+## Segurança e limite de escopo
+
+- Sessões são vinculadas a `empresa_id` e `usuario_id`.
+- Acesso cruzado entre empresas ou usuários é rejeitado.
+- Papel de usuário é validado antes de execução.
+- Cliente e FAQ não têm acesso a dados operacionais internos.
+- Ações de negócio exigem confirmação explícita do usuário.
+- Respostas devem manter fontes e contexto de decisão quando aplicável.
+- O projeto adota fail-closed para validação e reforço de segurança.
 
 ## Testes
 
-Suíte não depende de banco, rede ou LLM — roda em qualquer máquina:
+Executar validação básica de compilação e testes:
 
 ```powershell
-.\.venv\Scripts\python.exe -m compileall -q app config interfaces tests scripts
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
+python -m compileall -q app config interfaces tests scripts
+python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-## Convenções do projeto
+Os testes cobrem regras de autorização, isolamento de sessão, controle de acesso e comportamento de fronteira sem depender de LLM ou de serviços externos.
 
-Regras obrigatórias de arquitetura e contribuição estão em [AGENTS.md](AGENTS.md).
+## Observabilidade
 
+O projeto registra:
 
+- latência por execução
+- latência por nó do grafo
+- status de cada etapa
+- métricas de custo e performance
+- relatório de conformidade/auditoria
+- execução de agentes e resultados do Juiz
 
+Esses dados podem ser consultados via endpoints de métricas e auditoria.
 
+## Observações importantes
 
-# Cliente (fala com o Agente Cliente/FAQ — promoções, lojas, fidelidade)
-.\scripts\windows\Chat-Interactive.ps1 -Role CLIENTE
+- O projeto foi desenhado para funcionar em ambiente local com Docker e serviços reais.
+- O módulo de RAG e integrações externas dependem de fábricas e conexões configuradas corretamente em `.env`.
+- O `start.sh` é específico para alguns ambientes, mas a API principal deve ser iniciada diretamente com `uvicorn` em geral.
+- O código já inclui compatibilidade de imports legado para manter estabilidade de integração.
 
-# Estoquista (fala com o Agente Funcionário — estoque, alertas, procedimentos)
-.\scripts\windows\Chat-Interactive.ps1 -Role ESTOQUISTA
+## Licença
 
-# Gerente (mesmo Agente Funcionário, com permissões de gerente)
-.\scripts\windows\Chat-Interactive.ps1 -Role GERENTE
+Este projeto é de uso interno/privado e não foi destinado a publicação pública como software open source.
 
-# Dono (fala com o Agente Dono — KPIs, faturamento, analytics, ROI)
-.\scripts\windows\Chat-Interactive.ps1 -Role DONO
+## Contato
+
+O projeto é estruturado para atuar como camada de inteligência de negócio em ambiente de varejo e gestão operacional, com foco em produtividade, previsibilidade e governança de decisões de IA.
