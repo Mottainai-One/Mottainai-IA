@@ -11,7 +11,6 @@ app/integrations/mcp_a2a.py, which targets external systems, not end users.
 import asyncio
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 
 # SSL fix for macOS (Homebrew Python doesn't use the native Keychain by default)
 try:
@@ -22,13 +21,23 @@ except ImportError:
 
 from typing import Annotated
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile, status
+import httpx
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import JSONResponse
 from google.api_core.exceptions import GoogleAPICallError
 from google.auth.exceptions import GoogleAuthError
 from groq import APIConnectionError, APIError
 from openai import OpenAIError
-import httpx
 from pydantic import BaseModel, Field
 
 from app.agents.governanca import run_auditoria_execucoes, run_relatorio_conformidade
@@ -36,6 +45,7 @@ from app.agents.runtime import get_llm_model_label
 from app.agents.supervisor import MottainaiState, mottainai_graph, node_guardrail_saida
 from app.database.mongo import get_mongo_db
 from app.database.operational_schema import OPERATIONAL_SCHEMA_READY_QUERY
+from app.integrations.mcp_a2a import a2a_agent_card, dispatch_a2a, dispatch_mcp
 from app.memory.short_term import (
     SessionExpiredError,
     SessionOwnershipError,
@@ -44,12 +54,10 @@ from app.memory.short_term import (
     list_conversations,
     load_history,
 )
-from app.integrations.mcp_a2a import a2a_agent_card, dispatch_a2a, dispatch_mcp
 from app.observability.executions import record_agent_execution
 from app.observability.metrics import get_metrics_summary, record_execution_metrics
 from app.security.auth import AuthContext, require_auth, require_roles
 from config.settings import get_settings
-
 
 # ─────────────────────────────────────────────
 # Lifespan (startup/shutdown)
@@ -167,8 +175,9 @@ async def _dependency_checks() -> dict[str, str]:
         checks["redis"] = "unavailable"
 
     try:
-        from app.database.postgres import get_pg_session
         from sqlalchemy import text
+
+        from app.database.postgres import get_pg_session
 
         async with get_pg_session() as session:
             result = await session.execute(
@@ -431,8 +440,8 @@ async def trigger_motor_preditivo(principal: Annotated[AuthContext, Depends(requ
         "output_tokens": 0,
     }
 
-    from app.agents.motor_preditivo import node_motor_preditivo
     from app.agents.juiz import node_agente_juiz
+    from app.agents.motor_preditivo import node_motor_preditivo
 
     try:
         result = await node_motor_preditivo(state)

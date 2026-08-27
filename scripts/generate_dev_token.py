@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Gera um JWT local para demonstração; não expõe emissão de token pela API."""
 import argparse
-from datetime import datetime, timedelta, timezone
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent

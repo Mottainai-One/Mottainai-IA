@@ -8,9 +8,9 @@ For this course project, we implemented:
 
 Reference: https://modelcontextprotocol.io/introduction
 """
-import httpx
 from typing import Any
 
+import httpx
 
 # A2A (Agent-to-Agent) call simulation:
 # The Predictive Engine calls the "external weather agent" via the MCP interface
@@ -56,7 +56,7 @@ async def mcp_expose_tool(tool_name: str, params: dict[str, Any]) -> dict[str, A
       - get_replenishment_suggestion: restocking suggestion
       - get_company_kpis: company KPIs
     """
-    from app.tools.postgres_tools import get_stock_alerts, get_kpis
+    from app.tools.postgres_tools import get_kpis, get_stock_alerts
 
     empresa_id = params.get("empresa_id")
     if isinstance(empresa_id, bool) or not isinstance(empresa_id, int) or empresa_id < 1:

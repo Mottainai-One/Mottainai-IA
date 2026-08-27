@@ -16,6 +16,7 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 from motor.motor_asyncio import AsyncIOMotorClient
+
 from app.config import get_settings
 
 settings = get_settings()
@@ -183,8 +184,8 @@ async def setup(seed_demo: bool = False):
     print("=== MongoDB pronto! ===")
     print("  URI: configurada")
     print(f"  DB:  {MONGO_DB}")
-    print(f"  Coleções: conversations, messages, memories, metrics,")
-    print(f"            agent_executions, rag_documents, rag_chunks")
+    print("  Coleções: conversations, messages, memories, metrics,")
+    print("            agent_executions, rag_documents, rag_chunks")
     print("")
     print("Próximo passo: python scripts/generate_embeddings.py")
 

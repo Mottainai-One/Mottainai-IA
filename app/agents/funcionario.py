@@ -6,15 +6,16 @@ Uses Postgres (read) + Redis (notifications) + local RAG. Writes memory.
 Note: SYSTEM_PROMPT and the operational context block fed to the LLM are
 deliberately kept in Portuguese, same as the other agents.
 """
-from langchain_core.messages import HumanMessage, SystemMessage
+import json
+
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.runtime import MottainaiState, get_llm
 from app.memory.long_term import format_memory_for_prompt
 from app.rag.retriever import retrieve_with_sources
-from app.tools.postgres_tools import get_stock_alerts, get_inventory_status, get_expiring_batches
-from app.tools.redis_tools import get_inbox, format_notifications_for_agent
-import json
+from app.tools.postgres_tools import get_expiring_batches, get_inventory_status, get_stock_alerts
+from app.tools.redis_tools import format_notifications_for_agent, get_inbox
 
 SYSTEM_PROMPT = """Você é o Agente Funcionário do Mottainai — assistente operacional para estoquistas e gerentes.
 

@@ -157,8 +157,9 @@ async def analyze_shelf(
     if session_id:
         if usuario_id is None or conversation_id is None:
             raise ValueError("An authenticated session context is required to persist the analysis.")
-        from app.database.mongo import get_mongo_db
         from datetime import datetime, timezone
+
+        from app.database.mongo import get_mongo_db
         db = get_mongo_db()
         await db.ai_results.insert_one({
             "conversationId": conversation_id,

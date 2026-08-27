@@ -138,8 +138,9 @@ Avalie a resposta conforme as instruções.
         final_agent_response = agent_response
 
     # Saves the evaluation to MongoDB (prompt_evaluations)
-    from app.database.mongo import get_mongo_db
     from datetime import datetime, timezone
+
+    from app.database.mongo import get_mongo_db
     db = get_mongo_db()
     await db.prompt_evaluations.insert_one({
         "empresaId": state["empresa_id"],
