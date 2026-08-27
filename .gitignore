@@ -1,0 +1,14 @@
+.env
+.env.windows
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.run/
+

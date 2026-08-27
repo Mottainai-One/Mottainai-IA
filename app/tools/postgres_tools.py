@@ -1,0 +1,388 @@
+"""Consultas read-only ao schema operacional Mottainai v6."""
+from decimal import Decimal
+from typing import Any
+
+from sqlalchemy import text
+
+from app.database.postgres import get_pg_session
+
+
+async def _exec(
+    sql: str,
+    *,
+    empresa_id: int,
+    params: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Executa uma consulta no escopo do tenant autenticado."""
+    if isinstance(empresa_id, bool) or empresa_id < 1:
+        raise ValueError("empresa_id deve ser um inteiro positivo.")
+
+    query_params = {**(params or {}), "empresa_id": empresa_id}
+    async with get_pg_session() as session:
+        # O schema operacional v6 aplica RLS em company, retail_store,
+        # inventory e sales_transaction. O contexto é local à transação para
+        # não vazar tenant entre conexões.
+        await session.execute(
+            text("SELECT set_config('app.current_company_id', CAST(:empresa_id AS TEXT), true)"),
+            {"empresa_id": str(empresa_id)},
+        )
+        result = await session.execute(text(sql), query_params)
+        cols = list(result.keys())
+        return [dict(zip(cols, row)) for row in result.fetchall()]
+
+
+async def get_stock_alerts(
+    empresa_id: int,
+    limit: int = 10,
+    store_id: int | None = None,
+) -> list[dict]:
+    """
+    Retorna alertas ativos de estoque para uma empresa.
+    Usado pelo Agente Funcionário e Motor Preditivo.
+    """
+    if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
+        raise ValueError("store_id deve ser um inteiro positivo.")
+
+    store_filter = "AND a.store_id = :store_id" if store_id is not None else ""
+    sql = f"""
+        SELECT
+            a.alert_id        AS id,
+            a.alert_type      AS type,
+            a.priority,
+            a.status,
+            a.title,
+            a.description,
+            a.created_at,
+            rs.name           AS store_name
+        FROM mottainai.alert a
+        JOIN mottainai.retail_store rs ON rs.store_id = a.store_id
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        WHERE c.company_id = :empresa_id
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+          AND a.status = 'ACTIVE'
+          {store_filter}
+        ORDER BY
+            CASE a.priority
+                WHEN 'CRITICAL' THEN 1
+                WHEN 'HIGH'     THEN 2
+                WHEN 'MEDIUM'   THEN 3
+                ELSE 4
+            END,
+            a.created_at DESC
+        LIMIT :limit
+    """
+    params: dict[str, Any] = {"limit": limit}
+    if store_id is not None:
+        params["store_id"] = store_id
+    return await _exec(sql, empresa_id=empresa_id, params=params)
+
+
+async def get_expiring_batches(empresa_id: int, days_ahead: int = 7) -> list[dict]:
+    """
+    Retorna lotes com vencimento próximo.
+    Usado pelo Motor Preditivo para detecção de risco de perda.
+    """
+    sql = """
+        SELECT
+            b.batch_id,
+            b.batch_code,
+            b.expiration_date,
+            (b.expiration_date - CURRENT_DATE) AS days_to_expire,
+            COALESCE(SUM(i.current_quantity), 0) AS total_quantity,
+            p.name    AS product_name,
+            p.barcode AS barcode,
+            rs.store_id,
+            rs.name   AS store_name
+        FROM mottainai.batch b
+        JOIN mottainai.product p ON p.product_id = b.product_id
+        JOIN mottainai.inventory i ON i.batch_id = b.batch_id
+        JOIN mottainai.retail_store rs ON rs.store_id = i.store_id
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        WHERE c.company_id = :empresa_id
+          AND b.expiration_date BETWEEN CURRENT_DATE AND (CURRENT_DATE + CAST(:days_ahead AS INTEGER))
+          AND i.current_quantity > 0
+          AND b.active = TRUE
+          AND b.deleted_at IS NULL
+          AND i.deleted_at IS NULL
+          AND p.active = TRUE
+          AND p.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+        GROUP BY
+            b.batch_id,
+            b.batch_code,
+            b.expiration_date,
+            p.name,
+            p.barcode,
+            rs.store_id,
+            rs.name
+        ORDER BY b.expiration_date ASC
+        LIMIT 20
+    """
+    return await _exec(
+        sql,
+        empresa_id=empresa_id,
+        params={"days_ahead": days_ahead},
+    )
+
+
+async def get_sales_summary(empresa_id: int, days_back: int = 30) -> list[dict]:
+    """
+    Retorna resumo de vendas por produto nos últimos `days_back` dias.
+    Usado pelo Motor Preditivo para previsão de demanda.
+    """
+    sql = """
+        SELECT
+            p.product_id,
+            p.name        AS product_name,
+            p.barcode     AS barcode,
+            SUM(si.quantity_sold)          AS total_sold,
+            COUNT(DISTINCT st.sale_id)     AS transactions,
+            AVG(si.unit_price)             AS avg_price
+        FROM mottainai.sales_transaction st
+        JOIN mottainai.sale_item si ON si.sale_id = st.sale_id AND si.sale_date = st.sale_date
+        JOIN mottainai.product p ON p.product_id = si.product_id
+        JOIN mottainai.retail_store rs ON rs.store_id = st.store_id
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        WHERE c.company_id = :empresa_id
+          AND st.sale_date >= (CURRENT_DATE - CAST(:days_back AS INTEGER))
+          AND st.status = 'COMPLETED'
+          AND st.deleted_at IS NULL
+          AND p.active = TRUE
+          AND p.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+        GROUP BY p.product_id, p.name, p.barcode
+        ORDER BY total_sold DESC
+        LIMIT 20
+    """
+    return await _exec(sql, empresa_id=empresa_id, params={"days_back": days_back})
+
+
+async def get_kpis(empresa_id: int) -> dict:
+    """
+    KPIs gerenciais consolidados.
+    Usado pelo Agente Dono.
+    """
+    sql_revenue = """
+        SELECT COALESCE(SUM(si.subtotal), 0) AS revenue_30d
+        FROM mottainai.sales_transaction st
+        JOIN mottainai.sale_item si ON si.sale_id = st.sale_id AND si.sale_date = st.sale_date
+        JOIN mottainai.retail_store rs ON rs.store_id = st.store_id
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        WHERE c.company_id = :empresa_id
+          AND st.sale_date >= (CURRENT_DATE - INTERVAL '30 days')
+          AND st.status = 'COMPLETED'
+          AND si.status = 'SOLD'
+          AND st.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+    """
+    sql_losses = """
+        SELECT
+            COALESCE(SUM(di.disposed_quantity * b.unit_cost), 0) AS disposal_cost_30d
+        FROM mottainai.disposal d
+        JOIN mottainai.disposal_item di ON di.disposal_id = d.disposal_id
+        JOIN mottainai.batch b ON b.batch_id = di.batch_id
+        JOIN mottainai.retail_store rs ON rs.store_id = d.store_id
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        WHERE c.company_id = :empresa_id
+          AND d.created_at >= (CURRENT_DATE - CAST(30 AS INTEGER))
+          AND b.active = TRUE
+          AND b.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+    """
+    sql_alerts = """
+        SELECT COUNT(*) AS active_alerts
+        FROM mottainai.alert a
+        JOIN mottainai.retail_store rs ON rs.store_id = a.store_id
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        WHERE c.company_id = :empresa_id
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+          AND a.status = 'ACTIVE'
+    """
+
+    revenue = await _exec(sql_revenue, empresa_id=empresa_id)
+    losses = await _exec(sql_losses, empresa_id=empresa_id)
+    alerts = await _exec(sql_alerts, empresa_id=empresa_id)
+
+    return {
+        "revenue_30d": revenue[0]["revenue_30d"] if revenue else Decimal("0"),
+        "disposal_cost_30d": losses[0]["disposal_cost_30d"] if losses else Decimal("0"),
+        "active_alerts": int(alerts[0]["active_alerts"]) if alerts else 0,
+    }
+
+
+async def get_inventory_status(empresa_id: int, store_id: int | None = None) -> list[dict]:
+    """
+    Situação atual do inventário (quantidade em estoque vs mínimo).
+    Usado pelo Agente Funcionário.
+    """
+    if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
+        raise ValueError("store_id deve ser um inteiro positivo.")
+
+    store_filter = "AND i.store_id = :store_id" if store_id is not None else ""
+    sql = f"""
+        SELECT
+            p.name        AS product_name,
+            p.barcode     AS barcode,
+            i.current_quantity   AS quantity,
+            i.minimum_quantity   AS min_quantity,
+            i.maximum_quantity   AS max_quantity,
+            CASE
+                WHEN i.current_quantity <= 0                          THEN 'RUPTURA'
+                WHEN i.current_quantity < i.minimum_quantity          THEN 'ABAIXO_MINIMO'
+                WHEN i.maximum_quantity IS NOT NULL
+                 AND i.current_quantity > i.maximum_quantity          THEN 'EXCESSO'
+                ELSE 'NORMAL'
+            END AS stock_status,
+            rs.name AS store_name
+        FROM mottainai.inventory i
+        JOIN mottainai.batch b ON b.batch_id = i.batch_id
+        JOIN mottainai.product p ON p.product_id = b.product_id
+        JOIN mottainai.retail_store rs ON rs.store_id = i.store_id
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        WHERE c.company_id = :empresa_id
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+          AND i.deleted_at IS NULL
+          AND b.active = TRUE
+          AND b.deleted_at IS NULL
+          AND p.active = TRUE
+          AND p.deleted_at IS NULL
+          {store_filter}
+        ORDER BY
+            CASE
+                WHEN i.current_quantity <= 0                     THEN 1
+                WHEN i.current_quantity < i.minimum_quantity     THEN 2
+                ELSE 3
+            END
+        LIMIT 30
+    """
+    params: dict[str, Any] = {}
+    if store_id is not None:
+        params["store_id"] = store_id
+    return await _exec(sql, empresa_id=empresa_id, params=params)
+
+
+async def get_inventory_match(
+    empresa_id: int,
+    product_name: str,
+    store_id: int | None = None,
+) -> dict[str, Any] | None:
+    """Localiza um produto visto em prateleira dentro do tenant autenticado."""
+    if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
+        raise ValueError("store_id deve ser um inteiro positivo.")
+
+    store_filter = "AND i.store_id = :store_id" if store_id is not None else ""
+    sql = f"""
+        WITH company_inventory AS (
+            SELECT
+                i.batch_id,
+                i.current_quantity,
+                i.minimum_quantity
+            FROM mottainai.inventory i
+            JOIN mottainai.retail_store rs ON rs.store_id = i.store_id
+            JOIN mottainai.company c ON c.company_id = rs.company_id
+            WHERE c.company_id = :empresa_id
+              AND c.active = TRUE
+              AND c.deleted_at IS NULL
+              AND rs.active = TRUE
+              AND rs.deleted_at IS NULL
+              AND i.deleted_at IS NULL
+              {store_filter}
+        )
+        SELECT
+            p.product_id AS id,
+            p.name,
+            p.barcode,
+            COALESCE(SUM(ci.current_quantity), 0) AS quantity,
+            COALESCE(SUM(ci.minimum_quantity), 0) AS min_quantity,
+            CASE
+                WHEN COUNT(ci.batch_id) = 0 THEN 'SEM_INVENTARIO'
+                WHEN COALESCE(SUM(ci.current_quantity), 0) <= 0 THEN 'RUPTURA'
+                WHEN COALESCE(SUM(ci.current_quantity), 0) < COALESCE(SUM(ci.minimum_quantity), 0)
+                    THEN 'ABAIXO_MINIMO'
+                ELSE 'OK'
+            END AS status
+        FROM mottainai.product p
+        LEFT JOIN mottainai.batch b
+          ON b.product_id = p.product_id
+         AND b.active = TRUE
+         AND b.deleted_at IS NULL
+        LEFT JOIN company_inventory ci ON ci.batch_id = b.batch_id
+        WHERE p.active = TRUE
+          AND p.deleted_at IS NULL
+          AND LOWER(p.name) ILIKE LOWER(:name_like)
+        GROUP BY p.product_id, p.name, p.barcode
+        ORDER BY
+            CASE WHEN LOWER(p.name) = LOWER(:exact_name) THEN 0 ELSE 1 END,
+            p.name
+        LIMIT 1
+    """
+    params: dict[str, Any] = {
+        "name_like": f"%{product_name[:80]}%",
+        "exact_name": product_name[:80],
+    }
+    if store_id is not None:
+        params["store_id"] = store_id
+    rows = await _exec(sql, empresa_id=empresa_id, params=params)
+    return rows[0] if rows else None
+
+
+async def get_shelf_inventory_crosscheck(
+    empresa_id: int,
+    store_id: int | None,
+    detected_products: list[str],
+) -> dict[str, list[dict[str, Any]]]:
+    """Cruza produtos detectados com estoque e alertas do schema v6."""
+    found: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for product_name in detected_products:
+        normalized_name = product_name.strip()
+        if not normalized_name or normalized_name.lower() in seen_names:
+            continue
+        seen_names.add(normalized_name.lower())
+        match = await get_inventory_match(empresa_id, normalized_name, store_id)
+        if match:
+            found.append(match)
+
+    inventory = await get_inventory_status(empresa_id, store_id)
+    detected_names = {name.lower() for name in seen_names}
+    missing: list[dict[str, Any]] = []
+    seen_inventory: set[tuple[str, str]] = set()
+    for item in inventory:
+        if item["stock_status"] not in {"RUPTURA", "ABAIXO_MINIMO"}:
+            continue
+        product_name = item["product_name"]
+        key = (product_name.lower(), item["store_name"])
+        if key in seen_inventory or any(
+            product_name.lower() in name or name in product_name.lower()
+            for name in detected_names
+        ):
+            continue
+        seen_inventory.add(key)
+        missing.append(item)
+
+    return {
+        "encontrados": found,
+        "ausentes_esperados": missing,
+        "alertas_ativos": await get_stock_alerts(empresa_id, limit=10, store_id=store_id),
+    }

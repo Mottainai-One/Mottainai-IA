@@ -1,0 +1,237 @@
+"""Contratos das consultas da IA Layer com o schema operacional v6."""
+from decimal import Decimal
+import unittest
+from unittest.mock import AsyncMock, patch
+
+from app.tools import postgres_tools
+from app.tools.vision_tools import crosscheck_with_inventory
+
+
+class FakeResult:
+    def __init__(self, keys: list[str] | None = None, rows: list[tuple] | None = None):
+        self._keys = keys or []
+        self._rows = rows or []
+
+    def keys(self):
+        return self._keys
+
+    def fetchall(self):
+        return self._rows
+
+
+class FakeSession:
+    def __init__(self, results: list[FakeResult]):
+        self._results = iter(results)
+        self.calls: list[tuple[str, dict]] = []
+
+    async def execute(self, statement, params=None):
+        self.calls.append((str(statement), params or {}))
+        return next(self._results)
+
+
+class FakeSessionContext:
+    def __init__(self, session: FakeSession):
+        self._session = session
+
+    async def __aenter__(self):
+        return self._session
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+
+class PostgresExecutionContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_sets_transaction_local_company_context_before_query(self):
+        session = FakeSession([FakeResult(), FakeResult(["id"], [(7,)])])
+        with patch(
+            "app.tools.postgres_tools.get_pg_session",
+            return_value=FakeSessionContext(session),
+        ):
+            rows = await postgres_tools._exec(
+                "SELECT :empresa_id AS id",
+                empresa_id=42,
+            )
+
+        self.assertEqual(rows, [{"id": 7}])
+        context_sql, context_params = session.calls[0]
+        query_sql, query_params = session.calls[1]
+        self.assertIn("set_config('app.current_company_id'", context_sql)
+        self.assertEqual(context_params, {"empresa_id": "42"})
+        self.assertIn("SELECT :empresa_id AS id", query_sql)
+        self.assertEqual(query_params["empresa_id"], 42)
+
+    async def test_rejects_invalid_company_context(self):
+        with self.assertRaises(ValueError):
+            await postgres_tools._exec("SELECT 1", empresa_id=0)
+
+
+class PostgresSchemaContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_stock_alerts_binds_optional_store_filter(self):
+        with patch(
+            "app.tools.postgres_tools._exec",
+            new=AsyncMock(return_value=[]),
+        ) as execute:
+            await postgres_tools.get_stock_alerts(42, limit=5, store_id=99)
+
+        sql = execute.await_args.args[0]
+        self.assertIn("AND a.store_id = :store_id", sql)
+        self.assertEqual(execute.await_args.kwargs["empresa_id"], 42)
+        self.assertEqual(execute.await_args.kwargs["params"], {"limit": 5, "store_id": 99})
+
+    async def test_expiring_batches_uses_v6_relations_and_store_identity(self):
+        with patch(
+            "app.tools.postgres_tools._exec",
+            new=AsyncMock(return_value=[]),
+        ) as execute:
+            await postgres_tools.get_expiring_batches(42, days_ahead=14)
+
+        sql = execute.await_args.args[0]
+        self.assertIn("mottainai.inventory i ON i.batch_id = b.batch_id", sql)
+        self.assertIn("p.barcode AS barcode", sql)
+        self.assertNotIn("p.sku", sql)
+        self.assertIn("rs.store_id", sql)
+        self.assertIn("i.deleted_at IS NULL", sql)
+        self.assertIn("GROUP BY", sql)
+        self.assertEqual(execute.await_args.kwargs["empresa_id"], 42)
+        self.assertEqual(execute.await_args.kwargs["params"]["days_ahead"], 14)
+
+    async def test_sales_summary_excludes_cancelled_and_deleted_records(self):
+        with patch(
+            "app.tools.postgres_tools._exec",
+            new=AsyncMock(return_value=[]),
+        ) as execute:
+            await postgres_tools.get_sales_summary(42, days_back=60)
+
+        sql = execute.await_args.args[0]
+        self.assertIn("si.sale_id = st.sale_id AND si.sale_date = st.sale_date", sql)
+        self.assertNotIn("si.status", sql)
+        self.assertIn("st.deleted_at IS NULL", sql)
+        self.assertIn("p.barcode     AS barcode", sql)
+        self.assertNotIn("p.sku", sql)
+        self.assertEqual(execute.await_args.kwargs["empresa_id"], 42)
+        self.assertEqual(execute.await_args.kwargs["params"]["days_back"], 60)
+
+    async def test_inventory_query_keeps_store_filter_bound(self):
+        with patch(
+            "app.tools.postgres_tools._exec",
+            new=AsyncMock(return_value=[]),
+        ) as execute:
+            await postgres_tools.get_inventory_status(42, store_id=99)
+
+        sql = execute.await_args.args[0]
+        self.assertIn("AND i.store_id = :store_id", sql)
+        self.assertIn("mottainai.batch b ON b.batch_id = i.batch_id", sql)
+        self.assertNotIn("p.sku", sql)
+        self.assertNotIn("p.barcode     AS sku", sql)
+        self.assertEqual(execute.await_args.kwargs["params"]["store_id"], 99)
+
+    async def test_inventory_query_rejects_invalid_store_id(self):
+        with self.assertRaises(ValueError):
+            await postgres_tools.get_inventory_status(42, store_id=0)
+
+    async def test_inventory_match_uses_company_scoped_batches(self):
+        with patch(
+            "app.tools.postgres_tools._exec",
+            new=AsyncMock(return_value=[]),
+        ) as execute:
+            await postgres_tools.get_inventory_match(42, "Leite Integral", store_id=99)
+
+        sql = execute.await_args.args[0]
+        self.assertIn("WITH company_inventory AS", sql)
+        self.assertIn("mottainai.inventory i", sql)
+        self.assertIn("c.company_id = :empresa_id", sql)
+        self.assertIn("COUNT(ci.batch_id) = 0 THEN 'SEM_INVENTARIO'", sql)
+        self.assertNotIn("p.sku", sql)
+        self.assertEqual(execute.await_args.kwargs["params"]["store_id"], 99)
+
+    async def test_kpis_preserve_decimal_precision(self):
+        responses = [
+            [{"revenue_30d": Decimal("0.30")}],
+            [{"disposal_cost_30d": Decimal("0.10")}],
+            [{"active_alerts": 2}],
+        ]
+        with patch(
+            "app.tools.postgres_tools._exec",
+            new=AsyncMock(side_effect=responses),
+        ) as execute:
+            result = await postgres_tools.get_kpis(42)
+
+        self.assertEqual(result["revenue_30d"], Decimal("0.30"))
+        self.assertEqual(result["disposal_cost_30d"], Decimal("0.10"))
+        self.assertEqual(result["active_alerts"], 2)
+        revenue_sql = execute.await_args_list[0].args[0]
+        self.assertIn("st.status = 'COMPLETED'", revenue_sql)
+        self.assertIn("si.status = 'SOLD'", revenue_sql)
+
+
+class ShelfInventoryContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_crosscheck_uses_critical_inventory_for_missing_products(self):
+        inventory = [
+            {
+                "product_name": "Leite Integral",
+                "quantity": Decimal("0"),
+                "min_quantity": Decimal("10"),
+                "stock_status": "RUPTURA",
+                "store_name": "Centro",
+            },
+            {
+                "product_name": "Iogurte Natural",
+                "quantity": Decimal("2"),
+                "min_quantity": Decimal("10"),
+                "stock_status": "ABAIXO_MINIMO",
+                "store_name": "Centro",
+            },
+        ]
+        with (
+            patch(
+                "app.tools.postgres_tools.get_inventory_match",
+                new=AsyncMock(return_value={"id": 1, "name": "Leite Integral"}),
+            ),
+            patch(
+                "app.tools.postgres_tools.get_inventory_status",
+                new=AsyncMock(return_value=inventory),
+            ) as status,
+            patch(
+                "app.tools.postgres_tools.get_stock_alerts",
+                new=AsyncMock(return_value=[{"type": "EXPIRATION"}]),
+            ) as alerts,
+        ):
+            result = await postgres_tools.get_shelf_inventory_crosscheck(
+                empresa_id=42,
+                store_id=7,
+                detected_products=["Leite Integral", "leite integral"],
+            )
+
+        self.assertEqual(result["encontrados"], [{"id": 1, "name": "Leite Integral"}])
+        self.assertEqual(result["ausentes_esperados"], [inventory[1]])
+        self.assertEqual(result["alertas_ativos"], [{"type": "EXPIRATION"}])
+        status.assert_awaited_once_with(42, 7)
+        alerts.assert_awaited_once_with(42, limit=10, store_id=7)
+
+    async def test_vision_wrapper_keeps_authenticated_company_and_store(self):
+        with patch(
+            "app.tools.vision_tools.get_shelf_inventory_crosscheck",
+            new=AsyncMock(return_value={"encontrados": []}),
+        ) as crosscheck:
+            result = await crosscheck_with_inventory(
+                empresa_id=42,
+                store_id=7,
+                detected_products=["Leite Integral"],
+            )
+
+        self.assertEqual(result, {"encontrados": []})
+        crosscheck.assert_awaited_once_with(42, 7, ["Leite Integral"])
+
+    async def test_empty_shelf_still_queries_operational_context(self):
+        with patch(
+            "app.tools.vision_tools.get_shelf_inventory_crosscheck",
+            new=AsyncMock(return_value={"ausentes_esperados": [{"product_name": "Leite"}]}),
+        ) as crosscheck:
+            result = await crosscheck_with_inventory(empresa_id=42, store_id=7, detected_products=[])
+
+        self.assertEqual(result, {"ausentes_esperados": [{"product_name": "Leite"}]})
+        crosscheck.assert_awaited_once_with(42, 7, [])
+
+
+if __name__ == "__main__":
+    unittest.main()
