@@ -1,1 +1,1 @@
-"""Serviços Redis versionados do Mottainai."""
+"""Mottainai's versioned Redis services."""

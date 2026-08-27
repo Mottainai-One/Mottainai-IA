@@ -1,6 +1,6 @@
 """
-Conexão async com MongoDB (motor).
-Camada exclusiva de IA: conversas, memória, RAG, governança, métricas.
+Async connection to MongoDB (motor).
+AI-only layer: conversations, memory, RAG, governance, metrics.
 """
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 

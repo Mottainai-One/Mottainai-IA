@@ -1,8 +1,12 @@
 """
-Agente Cliente — atende o cliente final do varejo Mottainai.
-Skills: Promoções, Lojas, Fidelidade, Sustentabilidade, FAQ.
-Usa RAG (rag_documents/rag_chunks) — NÃO escreve memória, NÃO acessa Postgres diretamente.
-Indica as fontes usadas na resposta (rastreabilidade).
+Customer Agent — serves the Mottainai retail end customer.
+Skills: Promotions, Stores, Loyalty, Sustainability, FAQ.
+Uses RAG (rag_documents/rag_chunks) — does NOT write memory, does NOT access Postgres directly.
+Reports the sources used in the response (traceability).
+
+Note: SYSTEM_PROMPT is deliberately kept in Portuguese — it's the tuned
+instruction that makes the assistant answer Mottainai's end users in
+Portuguese, which is the product's actual language, not developer-facing code.
 """
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -30,20 +34,20 @@ Se a pergunta estiver fora do escopo do Mottainai, diga: "Posso ajudar apenas co
 
 
 async def node_agente_cliente(state: MottainaiState) -> MottainaiState:
-    """Nó do Agente Cliente no grafo LangGraph."""
+    """Customer Agent node in the LangGraph graph."""
     query = state["sanitized_input"]
     empresa_id = state["empresa_id"]
 
-    # RAG: busca contexto relevante
+    # RAG: fetches relevant context
     rag_context, sources = await retrieve_with_sources(query, empresa_id)
 
-    # Memória de longo prazo
+    # Long-term memory
     mem_context = format_memory_for_prompt(state["memory"])
 
-    # Monta o prompt
+    # Builds the prompt (labels kept in Portuguese, see module docstring)
     messages = [
         SystemMessage(content=f"{SYSTEM_PROMPT}\n\n--- Memória do usuário ---\n{mem_context}\n\n--- Informações disponíveis ---\n{rag_context}"),
-        *state["history"][-10:],  # últimas 10 msgs do histórico
+        *state["history"][-10:],  # last 10 messages of the history
         HumanMessage(content=query),
     ]
 
@@ -51,7 +55,7 @@ async def node_agente_cliente(state: MottainaiState) -> MottainaiState:
     response = await llm.ainvoke(messages)
     content = response.content
 
-    # Contabiliza tokens para observabilidade
+    # Counts tokens for observability
     usage = getattr(response, "usage_metadata", None) or {}
 
     return {

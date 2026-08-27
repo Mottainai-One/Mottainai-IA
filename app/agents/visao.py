@@ -1,14 +1,19 @@
 """
-Agente de Visão — Análise de Prateleira.
-O funcionário tira foto da prateleira, este agente identifica:
-  - Quais produtos estão presentes (por nome/embalagem)
-  - Estimativa de quantidade por produto
-  - Slots vazios (ruptura ou baixo estoque)
-  - Comparação com o planograma esperado (via PostgreSQL)
-  - Ação sugerida: repor / reposicionar / nenhuma
+Vision Agent — Shelf Analysis.
+The employee takes a photo of the shelf, this agent identifies:
+  - Which products are present (by name/packaging)
+  - Estimated quantity per product
+  - Empty slots (stockout or low stock)
+  - Comparison against the expected planogram (via PostgreSQL)
+  - Suggested action: restock / reposition / none
 
-LLM: Google Gemini 1.5 Flash (gratuito, suporte nativo a imagens).
-O resultado alimenta o Agente Funcionário e pode acionar alertas no Motor Preditivo.
+LLM: Google Gemini (free tier, native image support).
+The result feeds the Employee Agent and can trigger alerts in the Predictive Engine.
+
+Note: VISION_SYSTEM_PROMPT is deliberately kept in Portuguese. It also
+defines the JSON schema the LLM must return (produtos_detectados,
+quantidade_estimada, etc.) — those keys are a functional data contract with
+the code below, not just prompt wording, so they are not translated either.
 """
 from __future__ import annotations
 
@@ -85,23 +90,23 @@ async def analyze_shelf(
     conversation_id: Any | None = None,
 ) -> dict:
     """
-    Analisa uma foto de prateleira.
+    Analyzes a shelf photo.
 
-    Aceita:
-      - image_path: caminho para arquivo local (jpg/png/webp)
-      - image_bytes: bytes da imagem (upload via API)
+    Accepts:
+      - image_path: path to a local file (jpg/png/webp)
+      - image_bytes: image bytes (upload via API)
 
-    Retorna resultado da análise + cruzamento com inventário do Postgres.
+    Returns the analysis result + cross-check against Postgres inventory.
     """
-    # 1. Codifica a imagem em base64
+    # 1. Encodes the image as base64
     if image_path:
         b64 = encode_image_base64(Path(image_path))
     elif image_bytes:
         b64 = base64.b64encode(image_bytes).decode("utf-8")
     else:
-        raise ValueError("Forneça image_path ou image_bytes.")
+        raise ValueError("Provide image_path or image_bytes.")
 
-    # Preserva o MIME validado na borda HTTP; para uso local, infere pelo arquivo.
+    # Preserves the MIME type validated at the HTTP boundary; for local use, infers it from the file.
     if image_mime_type:
         mime = image_mime_type.split(";", 1)[0].strip().lower()
     elif image_path:
@@ -109,7 +114,7 @@ async def analyze_shelf(
     else:
         mime = "image/jpeg"
 
-    # 2. Chama Gemini Vision
+    # 2. Calls Gemini Vision
     llm = get_vision_llm()
 
     message = HumanMessage(
@@ -125,10 +130,10 @@ async def analyze_shelf(
     response = await llm.ainvoke([message])
     raw = response.content.strip()
 
-    # 3. Extrai JSON da resposta
+    # 3. Extracts JSON from the response
     vision_result = _extract_json(raw)
 
-    # 4. Cruza com inventário do Postgres, inclusive para uma prateleira vazia.
+    # 4. Cross-checks against Postgres inventory, including for an empty shelf.
     raw_products = vision_result.get("produtos_detectados")
     detected_products = [
         product["nome"].strip()
@@ -145,13 +150,13 @@ async def analyze_shelf(
         )
         vision_result["cruzamento_inventario"] = inventory_check
 
-    # 5. Gera relatório legível
+    # 5. Generates a readable report
     vision_result["relatorio_texto"] = generate_shelf_report(vision_result)
 
-    # 6. Persiste no MongoDB para rastreabilidade
+    # 6. Persists to MongoDB for traceability
     if session_id:
         if usuario_id is None or conversation_id is None:
-            raise ValueError("Contexto autenticado da sessão é obrigatório para persistir a análise.")
+            raise ValueError("An authenticated session context is required to persist the analysis.")
         from app.database.mongo import get_mongo_db
         from datetime import datetime, timezone
         db = get_mongo_db()
@@ -171,7 +176,7 @@ async def analyze_shelf(
 
 
 def _extract_json(raw: str) -> dict:
-    """Extrai JSON da resposta do LLM (remove markdown se necessário)."""
+    """Extracts JSON from the LLM response (strips markdown if needed)."""
     try:
         if "```" in raw:
             raw = raw.split("```")[1]
@@ -179,7 +184,7 @@ def _extract_json(raw: str) -> dict:
                 raw = raw[4:]
         return json.loads(raw.strip())
     except (json.JSONDecodeError, IndexError):
-        # Fallback: retorna resposta bruta como texto
+        # Fallback: returns the raw response as text
         return {
             "produtos_detectados": [],
             "slots_vazios": {"total_estimado": 0, "descricao": ""},

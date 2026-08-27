@@ -1,7 +1,10 @@
 """
-Agente Funcionário — atende operadores, estoquistas e gerentes.
-Skills: Manual do Sistema, Procedimentos, Estoque, Inventário, Entrada de Mercadorias, Alertas.
-Usa Postgres (leitura) + Redis (notificações) + RAG local. Escreve memória.
+Employee Agent — serves operators, stock clerks and managers.
+Skills: System manual, procedures, stock, inventory, goods receiving, alerts.
+Uses Postgres (read) + Redis (notifications) + local RAG. Writes memory.
+
+Note: SYSTEM_PROMPT and the operational context block fed to the LLM are
+deliberately kept in Portuguese, same as the other agents.
 """
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -28,21 +31,21 @@ Suas responsabilidades:
 
 
 async def node_agente_funcionario(state: MottainaiState) -> MottainaiState:
-    """Nó do Agente Funcionário no grafo LangGraph."""
+    """Employee Agent node in the LangGraph graph."""
     query = state["sanitized_input"]
     empresa_id = state["empresa_id"]
     usuario_id = state["usuario_id"]
 
-    # Consultas operacionais e notificações isoladas pelo contexto autenticado.
+    # Operational queries and notifications scoped by the authenticated context.
     alerts_data = await get_stock_alerts(empresa_id, limit=5)
     inventory_data = await get_inventory_status(empresa_id)
     expiring_data = await get_expiring_batches(empresa_id, days_ahead=7)
     notifications = await get_inbox(empresa_id, usuario_id, limit=5)
 
-    # RAG: manual/procedimentos
+    # RAG: manual/procedures
     rag_context, sources = await retrieve_with_sources(query, empresa_id)
 
-    # Formata contexto operacional
+    # Formats the operational context (kept in Portuguese, see module docstring)
     ops_context = f"""
 ALERTAS ATIVOS ({len(alerts_data)}):
 {json.dumps(alerts_data, default=str, ensure_ascii=False, indent=2)}

@@ -1,1 +1,1 @@
-"""Integrações autenticadas com protocolos externos."""
+"""Authenticated integrations with external protocols."""

@@ -1,4 +1,8 @@
-"""Compatibilidade para ferramentas Redis usadas pelos agentes."""
+"""Compatibility layer for Redis tools used by the agents.
+
+Note: format_notifications_for_agent() output is injected directly into an
+agent's LLM prompt, so it is deliberately kept in Portuguese.
+"""
 from app.cache.notifications import get_inbox, get_unread_count, mark_as_read
 
 __all__ = ["get_inbox", "get_unread_count", "mark_as_read", "format_notifications_for_agent"]

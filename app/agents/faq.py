@@ -1,4 +1,8 @@
-"""Agente FAQ — respostas públicas baseadas exclusivamente na base RAG."""
+"""FAQ Agent — public answers based exclusively on the RAG knowledge base.
+
+Note: SYSTEM_PROMPT is deliberately kept in Portuguese, same as the other
+agents — it drives the product's actual response language to end users.
+"""
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.runtime import MottainaiState, get_llm

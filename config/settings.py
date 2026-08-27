@@ -1,6 +1,6 @@
 """
-Mottainai IA Layer — Configurações centrais
-Carrega variáveis de ambiente e expõe settings tipados via pydantic-settings.
+Mottainai IA Layer — Central settings
+Loads environment variables and exposes typed settings via pydantic-settings.
 """
 from functools import lru_cache
 from pydantic import AliasChoices, Field, field_validator
@@ -10,25 +10,25 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    # LLM de texto
+    # Text LLM
     llm_provider: str = "groq"
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
 
-    # Ollama Cloud (requer token)
+    # Ollama Cloud (requires token)
     ollama_api_key: str = ""
     ollama_base_url: str = "https://ollama.com/v1"
     ollama_model: str = "gpt-oss:20b"
 
-    # Ollama local (não envia contexto para um provedor externo)
+    # Ollama local (does not send context to an external provider)
     ollama_local_base_url: str = "http://127.0.0.1:11434/v1"
     ollama_local_model: str = "qwen2.5:7b-instruct"
 
-    # Gemini Vision (análise de prateleira)
+    # Gemini Vision (shelf analysis)
     gemini_api_key: str = ""
     gemini_vision_model: str = "gemini-2.5-flash"
 
-    # Bancos
+    # Databases
     postgres_dsn: str = Field(
         default="postgresql+asyncpg://mottainai:mottainai@localhost:5432/mottainai",
         validation_alias=AliasChoices("POSTGRES_DSN", "DATABASE_URL"),
@@ -51,32 +51,33 @@ class Settings(BaseSettings):
     embedding_model: str = "all-MiniLM-L6-v2"
     transformers_offline: bool = False
 
-    # API externa (Open-Meteo — gratuita, sem chave)
+    # External API (Open-Meteo — free, no key required)
     openmeteo_base_url: str = "https://api.open-meteo.com/v1/forecast"
 
     # Rate limit
     rate_limit_rpm: int = 30
     session_timeout_minutes: int = 60
 
-    # Autenticação JWT (HS256; segredo obrigatório fora do código)
+    # JWT authentication (HS256; secret required outside of the code)
     jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
     jwt_expiration_minutes: int = 60
 
-    # Custo de referência configurável. No plano gratuito Groq, mantenha ambos em 0.
+    # Configurable reference cost. On the Groq free tier, keep both at 0.
     llm_input_cost_per_million_usd: float = 0.0
     llm_output_cost_per_million_usd: float = 0.0
 
-    # Robustez: novas tentativas automáticas em falha transitória do provedor de LLM
-    # (timeout, rate limit, erro 5xx) com backoff exponencial + jitter.
+    # Robustness: automatic retries on transient LLM provider failure
+    # (timeout, rate limit, 5xx error) with exponential backoff + jitter.
     llm_max_retries: int = 3
 
-    # Cache de resultados de RAG no Redis — evita reprocessar embeddings/similaridade
-    # para a mesma pergunta na mesma empresa. Puramente uma otimização de latência:
-    # se o Redis estiver indisponível, o RAG segue funcionando sem cache (fail-open).
+    # RAG results cache in Redis — avoids recomputing embeddings/similarity
+    # for the same question within the same company. Purely a latency
+    # optimization: if Redis is unavailable, RAG keeps working without
+    # cache (fail-open).
     rag_cache_ttl_seconds: int = 300
 
-    # Integrações externas (endpoints bloqueados sem tokens configurados)
+    # External integrations (endpoints blocked without configured tokens)
     mcp_shared_token: str = ""
     a2a_shared_token: str = ""
     mcp_empresa_id: int = 0
@@ -90,7 +91,7 @@ class Settings(BaseSettings):
     @field_validator("gemini_vision_model")
     @classmethod
     def migrate_retired_gemini_vision_model(cls, value: str) -> str:
-        """Mantém instalações locais com o nome legado em um modelo ativo."""
+        """Keeps local installs with the legacy name pointed at an active model."""
         return "gemini-2.5-flash" if value.strip() == "gemini-1.5-flash" else value.strip()
 
     @field_validator("llm_provider")
@@ -98,7 +99,7 @@ class Settings(BaseSettings):
     def validate_llm_provider(cls, value: str) -> str:
         provider = value.strip().lower()
         if provider not in {"groq", "ollama", "ollama_local"}:
-            raise ValueError("LLM_PROVIDER deve ser 'groq', 'ollama' ou 'ollama_local'")
+            raise ValueError("LLM_PROVIDER must be 'groq', 'ollama' or 'ollama_local'")
         return provider
 
     @property

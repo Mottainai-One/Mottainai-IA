@@ -1,12 +1,17 @@
 """
-Agente Governança/Auditoria — roda de forma assíncrona/periódica.
-NÃO bloqueia a resposta ao usuário.
+Governance/Audit Agent — runs asynchronously/periodically.
+Does NOT block the response to the user.
 
-Subagentes/capacidades:
-  1. Auditoria de Execuções (agent_executions + tool_runs)
-  2. Controle de Acesso e Escopo (agent_policies)
-  3. Rastreabilidade de Decisões (response_explanations)
-  4. Relatório de Conformidade (alimenta o Agente Dono)
+Sub-agents/capabilities:
+  1. Execution Audit (agent_executions + tool_runs)
+  2. Access and Scope Control (agent_policies)
+  3. Decision Traceability (response_explanations)
+  4. Compliance Report (feeds the Owner Agent)
+
+Note: the returned dict keys/values (e.g. "total_execucoes", "periodo",
+"custo_estimado_usd") are the API's data contract, asserted by tests and
+consumed by GET /audit/report — they are kept in Portuguese, not translated
+as part of this pass.
 """
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -16,7 +21,7 @@ from config.settings import get_settings
 
 
 async def _tenant_conversation_references(db: Any, empresa_id: int) -> tuple[list[Any], list[str]]:
-    """Obtém referências que permitem atribuir com segurança dados legados ao tenant."""
+    """Gets references that allow safely attributing legacy data to the tenant."""
     conversation_ids: list[Any] = []
     session_ids: list[str] = []
     cursor = db.conversations.find(
@@ -39,7 +44,7 @@ def _tenant_scoped_filter(
     conversation_ids: list[Any],
     session_ids: list[str],
 ) -> dict[str, Any]:
-    """Filtra dados do tenant, com fallback seguro para registros legados vinculados."""
+    """Filters tenant data, with a safe fallback for linked legacy records."""
     legacy_links: list[dict[str, Any]] = []
     if conversation_ids:
         legacy_links.append({"conversationId": {"$in": conversation_ids}})
@@ -66,8 +71,8 @@ def _tenant_scoped_filter(
 
 async def run_auditoria_execucoes(empresa_id: int) -> dict[str, Any]:
     """
-    Audita as execuções dos agentes nas últimas 24h.
-    Detecta: alta latência, taxa de erro, agentes não aprovados pelo Juiz.
+    Audits agent executions in the last 24h.
+    Detects: high latency, error rate, agents not approved by the Judge.
     """
     db = get_mongo_db()
     since = datetime.now(timezone.utc) - timedelta(hours=24)
@@ -83,7 +88,7 @@ async def run_auditoria_execucoes(empresa_id: int) -> dict[str, Any]:
     total = await db.agent_executions.count_documents(execution_filter)
     errors = await db.agent_executions.count_documents({**execution_filter, "status": "error"})
 
-    # Latência média
+    # Average latency
     pipeline = [
         {"$match": {**execution_filter, "latency": {"$ne": None}}},
         {"$group": {"_id": "$agent", "avg_latency": {"$avg": "$latency"}, "count": {"$sum": 1}}},
@@ -92,7 +97,7 @@ async def run_auditoria_execucoes(empresa_id: int) -> dict[str, Any]:
     async for doc in db.agent_executions.aggregate(pipeline):
         latency_by_agent.append(doc)
 
-    # Avaliações do Juiz abaixo de 0.7
+    # Judge evaluations below 0.7
     low_confidence = await db.prompt_evaluations.count_documents(
         {
             "empresaId": empresa_id,
@@ -116,7 +121,7 @@ async def run_auditoria_execucoes(empresa_id: int) -> dict[str, Any]:
 
 async def run_controle_acesso(empresa_id: int, agent: str, action: str) -> dict[str, Any]:
     """
-    Verifica se o agente respeitou sua agent_policy registrada no MongoDB.
+    Checks whether the agent respected its agent_policy registered in MongoDB.
     """
     db = get_mongo_db()
     policy = await db.agent_policies.find_one({"agent": agent, "empresaId": empresa_id})
@@ -129,7 +134,7 @@ async def run_controle_acesso(empresa_id: int, agent: str, action: str) -> dict[
     violation = any(fd in action.lower() for fd in forbidden_domains) if forbidden_domains else False
 
     if violation:
-        # Registra violação
+        # Records the violation
         await db.conversation_events.insert_one({
             "empresaId": empresa_id,
             "conversationId": None,
@@ -153,7 +158,7 @@ async def run_controle_acesso(empresa_id: int, agent: str, action: str) -> dict[
 
 async def run_relatorio_conformidade(empresa_id: int) -> dict[str, Any]:
     """
-    Gera relatório de conformidade para o Agente Dono.
+    Generates the compliance report for the Owner Agent.
     """
     db = get_mongo_db()
     since_7d = datetime.now(timezone.utc) - timedelta(days=7)

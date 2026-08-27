@@ -76,7 +76,7 @@ class McpTenantScopeContracts(unittest.IsolatedAsyncioTestCase):
     async def test_direct_mcp_tool_rejects_missing_company(self):
         result = await mcp_expose_tool("get_active_alerts", {})
 
-        self.assertEqual(result["error"], "Empresa autorizada obrigatória.")
+        self.assertEqual(result["error"], "An authorized company is required.")
 
 
 if __name__ == "__main__":

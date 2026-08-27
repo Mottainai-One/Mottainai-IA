@@ -1,6 +1,6 @@
 """
-Conexão async com PostgreSQL (asyncpg + SQLAlchemy 2.0).
-Fonte da verdade operacional do Mottainai.
+Async connection to PostgreSQL (asyncpg + SQLAlchemy 2.0).
+Mottainai's operational source of truth.
 """
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
@@ -14,7 +14,7 @@ settings = get_settings()
 
 engine = create_async_engine(
     settings.postgres_dsn,
-    poolclass=NullPool,  # sem pool — ambiente acadêmico, simplifica gestão
+    poolclass=NullPool,  # no pooling — academic environment, simplifies management
     echo=False,
 )
 

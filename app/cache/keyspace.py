@@ -1,4 +1,4 @@
-"""Convenções de chaves Redis. Não alterar sem criar nova versão."""
+"""Redis key conventions. Do not change without bumping the version."""
 
 PREFIX = "mottainai:v1"
 

@@ -1,4 +1,4 @@
-"""Notificações temporárias isoladas por empresa e usuário."""
+"""Temporary notifications, isolated per company and user."""
 from dataclasses import dataclass
 from time import time
 from uuid import uuid4
@@ -41,7 +41,7 @@ class Notification:
 
 def _validate_id(value: str) -> str:
     if not value or ':' in value or len(value) > 128:
-        raise ValueError('Identificador de notificação inválido.')
+        raise ValueError('Invalid notification identifier.')
     return value
 
 
@@ -49,7 +49,7 @@ async def create_notification(
     empresa_id: int, usuario_id: int, title: str, body: str, priority: int = 1, notification_id: str | None = None,
 ) -> Notification:
     if priority not in (1, 2, 3):
-        raise ValueError('Prioridade deve ser 1, 2 ou 3.')
+        raise ValueError('Priority must be 1, 2 or 3.')
     notification_id = _validate_id(notification_id or uuid4().hex)
     settings = get_settings()
     created_at = int(time())
@@ -72,7 +72,7 @@ async def get_unread_count(empresa_id: int, usuario_id: int) -> int:
 
 async def get_inbox(empresa_id: int, usuario_id: int, limit: int = 10) -> list[dict[str, str]]:
     if not 1 <= limit <= 100:
-        raise ValueError('O limite deve estar entre 1 e 100.')
+        raise ValueError('The limit must be between 1 and 100.')
     redis = get_redis()
     inbox_key = notification_inbox(empresa_id, usuario_id)
     ids = await redis.zrevrange(inbox_key, 0, limit - 1)

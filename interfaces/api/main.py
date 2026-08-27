@@ -1,13 +1,19 @@
 """
 Mottainai IA Layer — FastAPI main.py
-Ponto de entrada da API. Define todas as rotas.
+API entry point. Defines all routes.
+
+Note: HTTPException detail strings in this file are user/staff-facing (the
+outermost API boundary of the product) and are deliberately kept in
+Portuguese, like the agents' SYSTEM_PROMPT — the one exception is the /a2a
+"unauthorized" message, kept in English for consistency with the rest of
+app/integrations/mcp_a2a.py, which targets external systems, not end users.
 """
 import asyncio
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-# Fix SSL no macOS (Python do Homebrew não usa o Keychain nativo por padrão)
+# SSL fix for macOS (Homebrew Python doesn't use the native Keychain by default)
 try:
     import truststore
     truststore.inject_into_ssl()
@@ -51,7 +57,7 @@ from config.settings import get_settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # O modo offline só é seguro quando o modelo de embeddings já está em cache.
+    # Offline mode is only safe once the embedding model is already cached.
     if settings.transformers_offline:
         import os
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
@@ -72,50 +78,50 @@ settings = get_settings()
 app = FastAPI(
     title="Mottainai IA Layer",
     description="""
-## Mottainai — API Multiagente de Gestão Preditiva de Estoque
+## Mottainai — Multi-Agent Predictive Inventory Management API
 
-Sistema inteligente que combina LangGraph, LLMs (Groq/Llama 3.3) e visão computacional
-para reduzir desperdício e otimizar estoques em pequenos e médios varejos.
+Intelligent system combining LangGraph, LLMs (Groq/Llama 3.3) and computer
+vision to reduce waste and optimize stock in small and mid-sized retailers.
 
-### Agentes disponíveis
-| Role | Agente acionado | Capacidades |
+### Available agents
+| Role | Agent triggered | Capabilities |
 |------|----------------|-------------|
-| `ESTOQUISTA` | Agente Funcionário | Estoque, alertas, vencimentos, avarias |
-| `GERENTE` | Agente Funcionário | Tudo do Estoquista + sugestões da IA |
-| `DONO` | Agente Dono | KPIs, faturamento, perdas, multi-loja, analytics |
-| `CLIENTE` | Agente Cliente / FAQ | Promoções, lojas, fidelidade e ajuda |
+| `ESTOQUISTA` | Employee Agent | Stock, alerts, expiration dates, damages |
+| `GERENTE` | Employee Agent | Everything from Estoquista + AI suggestions |
+| `DONO` | Owner Agent | KPIs, revenue, losses, multi-store, analytics |
+| `CLIENTE` | Customer Agent / FAQ | Promotions, stores, loyalty and help |
 
-### Fluxo de uma mensagem
+### Message flow
 ```
-Guardrail entrada → Supervisor → Agente de domínio → Juiz → Guardrail saída
+Input guardrail → Supervisor → Domain agent → Judge → Output guardrail
 ```
 
-### Autenticação
-Todas as rotas de negócio exigem JWT Bearer. `sub`, `empresa_id` e `role` são
-claims verificadas; a API não aceita identidade no payload.
+### Authentication
+All business routes require a JWT Bearer. `sub`, `empresa_id` and `role`
+are verified claims; the API does not accept identity in the payload.
 """,
     version="1.0.0",
     contact={"name": "Mottainai Team"},
-    license_info={"name": "Privado"},
+    license_info={"name": "Private"},
     lifespan=lifespan,
     openapi_tags=[
-        {"name": "Chat", "description": "Interação com os agentes de IA"},
-        {"name": "Motor Preditivo", "description": "Análise automática de estoque e geração de sugestões"},
-        {"name": "Prateleira", "description": "Visão computacional para análise de prateleiras"},
-        {"name": "Métricas", "description": "Observabilidade, custo e performance dos agentes"},
-        {"name": "Auditoria", "description": "Conformidade e governança das decisões da IA"},
-        {"name": "Infra", "description": "Health check e status da infraestrutura"},
+        {"name": "Chat", "description": "Interaction with the AI agents"},
+        {"name": "Motor Preditivo", "description": "Automatic stock analysis and suggestion generation"},
+        {"name": "Prateleira", "description": "Computer vision for shelf analysis"},
+        {"name": "Métricas", "description": "Observability, cost and performance of the agents"},
+        {"name": "Auditoria", "description": "Compliance and governance of AI decisions"},
+        {"name": "Infra", "description": "Health check and infrastructure status"},
     ],
 )
 
 
 # ─────────────────────────────────────────────
-# Schemas de Request/Response
+# Request/Response schemas
 # ─────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=4096, description="Mensagem para o agente de IA")
-    session_id: str = Field(..., description="ID único da sessão a ser reutilizado durante a conversa")
+    message: str = Field(..., min_length=1, max_length=4096, description="Message for the AI agent")
+    session_id: str = Field(..., description="Unique session ID to reuse throughout the conversation")
 
     model_config = {"extra": "forbid", "json_schema_extra": {"examples": [{"value": {
         "message": "Quais produtos vencem nos próximos 3 dias?",
@@ -124,25 +130,25 @@ class ChatRequest(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    session_id: str = Field(..., description="ID da sessão")
-    response: str = Field(..., description="Resposta gerada pelo agente de IA")
-    agent: str = Field(..., description="Agente que processou a mensagem", examples=["funcionario"])
-    judge_approved: bool = Field(..., description="Se o Juiz aprovou a resposta (score >= 0.7)")
-    judge_score: float = Field(..., description="Pontuação do Juiz (0.0 a 1.0)", ge=0.0, le=1.0)
-    sources: list[dict] = Field(..., description="Fontes de dados consultadas pelo agente")
-    latency_s: float = Field(..., description="Latência total da requisição em segundos")
+    session_id: str = Field(..., description="Session ID")
+    response: str = Field(..., description="Response generated by the AI agent")
+    agent: str = Field(..., description="Agent that processed the message", examples=["funcionario"])
+    judge_approved: bool = Field(..., description="Whether the Judge approved the response (score >= 0.7)")
+    judge_score: float = Field(..., description="Judge score (0.0 to 1.0)", ge=0.0, le=1.0)
+    sources: list[dict] = Field(..., description="Data sources consulted by the agent")
+    latency_s: float = Field(..., description="Total request latency in seconds")
 
 
 class MetricsResponse(BaseModel):
-    data: dict = Field(..., description="Métricas de observabilidade e custo")
+    data: dict = Field(..., description="Observability and cost metrics")
 
 
 # ─────────────────────────────────────────────
-# Rotas
+# Routes
 # ─────────────────────────────────────────────
 
 async def _dependency_checks() -> dict[str, str]:
-    """Verifica dependências sem expor detalhes internos de conexão."""
+    """Checks dependencies without exposing internal connection details."""
     checks: dict[str, str] = {}
 
     try:
@@ -169,7 +175,7 @@ async def _dependency_checks() -> dict[str, str]:
                 text(OPERATIONAL_SCHEMA_READY_QUERY)
             )
             if not result.scalar():
-                raise RuntimeError("Schema operacional Mottainai indisponível.")
+                raise RuntimeError("Mottainai operational schema unavailable.")
         checks["postgres"] = "ok"
     except Exception:
         checks["postgres"] = "unavailable"
@@ -179,13 +185,13 @@ async def _dependency_checks() -> dict[str, str]:
 
 @app.get("/livez", tags=["Infra"])
 async def live_check():
-    """Indica que o processo HTTP está em execução, sem consultar dependências."""
+    """Indicates the HTTP process is running, without checking dependencies."""
     return {"status": "alive"}
 
 
 @app.get("/readyz", tags=["Infra"])
 async def readiness_check():
-    """Indica se a API pode receber tráfego dependente de dados."""
+    """Indicates whether the API can receive data-dependent traffic."""
     checks = await _dependency_checks()
     ready = all(value == "ok" for value in checks.values())
     payload = {"status": "ready" if ready else "unavailable", "checks": checks}
@@ -194,7 +200,7 @@ async def readiness_check():
 
 @app.get("/health", tags=["Infra"])
 async def health_check():
-    """Endpoint de compatibilidade com o status sanitizado das dependências."""
+    """Compatibility endpoint with the sanitized dependency status."""
     checks = await _dependency_checks()
     healthy = all(value == "ok" for value in checks.values())
     return {"status": "healthy" if healthy else "degraded", "checks": checks}
@@ -202,22 +208,22 @@ async def health_check():
 
 @app.get("/.well-known/agent-card.json", tags=["Integrações"])
 async def agent_card(request: Request):
-    """Agent Card para descoberta A2A; não expõe dados de negócio."""
+    """Agent Card for A2A discovery; does not expose business data."""
     return a2a_agent_card(str(request.base_url).rstrip("/"))
 
 
 @app.post("/a2a", tags=["Integrações"])
 async def a2a_message(payload: dict, authorization: str | None = Header(default=None)):
-    """Recebe solicitações A2A autenticadas para ações de leitura permitidas."""
+    """Receives authenticated A2A requests for allowed read actions."""
     result = await dispatch_a2a(payload, authorization)
     if (result.get("error") or {}).get("code") == "unauthorized":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Não autorizado.")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized.")
     return result
 
 
 @app.post("/mcp", tags=["Integrações"])
 async def mcp_rpc(payload: dict, authorization: str | None = Header(default=None)):
-    """Transport HTTP para os métodos MCP initialize, tools/list e tools/call."""
+    """HTTP transport for the MCP initialize, tools/list and tools/call methods."""
     return await dispatch_mcp(payload, authorization)
 
 
@@ -228,8 +234,8 @@ async def chat(
     principal: Annotated[AuthContext, Depends(require_auth)],
 ):
     """
-    Endpoint principal de chat multiagente.
-    Executa o grafo LangGraph completo: guardrail → supervisor → agente → juiz → guardrail saída.
+    Main multi-agent chat endpoint.
+    Runs the full LangGraph graph: guardrail → supervisor → agent → judge → output guardrail.
     """
     start_time = time.time()
 
@@ -290,7 +296,7 @@ async def chat(
 
     execution_status = "error" if result.get("error") else "completed"
     if result.get("error") and not result.get("final_response"):
-        # BackgroundTasks não roda quando a rota devolve exceção; persiste o erro agora.
+        # BackgroundTasks doesn't run when the route raises an exception; persist the error now.
         await record_agent_execution(
             empresa_id=principal.empresa_id,
             session_id=request.session_id,
@@ -328,7 +334,7 @@ async def chat(
         node_latencies_ms=result.get("node_latencies_ms", {}),
     )
 
-    # Métricas em background (não bloqueia resposta)
+    # Metrics in the background (does not block the response)
     background_tasks.add_task(
         record_execution_metrics,
         session_id=request.session_id,
@@ -345,7 +351,7 @@ async def chat(
         node_latencies_ms=result.get("node_latencies_ms", {}),
     )
 
-    # Auditoria em background (não bloqueia)
+    # Audit in the background (does not block)
     background_tasks.add_task(
         _run_governanca_async,
         principal.empresa_id,
@@ -366,7 +372,7 @@ async def chat(
 
 @app.get("/chat/history/{session_id}", tags=["Chat"])
 async def get_chat_history(session_id: str, principal: Annotated[AuthContext, Depends(require_auth)]):
-    """Retorna apenas histórico pertencente ao principal autenticado."""
+    """Returns only history belonging to the authenticated principal."""
     try:
         conversation = await get_conversation(session_id, principal.empresa_id, principal.usuario_id)
     except SessionOwnershipError as exc:
@@ -383,13 +389,13 @@ async def get_chat_history(session_id: str, principal: Annotated[AuthContext, De
 async def get_chat_sessions(
     principal: Annotated[AuthContext, Depends(require_auth)], limit: int = 20,
 ):
-    """Lista apenas sessões do principal autenticado."""
+    """Lists only sessions belonging to the authenticated principal."""
     return {"sessions": await list_conversations(principal.empresa_id, principal.usuario_id, limit)}
 
 
 @app.post("/chat/sessions/{session_id}/close", tags=["Chat"])
 async def close_chat_session(session_id: str, principal: Annotated[AuthContext, Depends(require_auth)]):
-    """Encerra uma sessão pertencente ao principal autenticado."""
+    """Closes a session belonging to the authenticated principal."""
     closed = await close_conversation(session_id, principal.empresa_id, principal.usuario_id)
     if not closed:
         try:
@@ -404,7 +410,7 @@ async def close_chat_session(session_id: str, principal: Annotated[AuthContext, 
 
 @app.post("/motor-preditivo/trigger", tags=["Motor Preditivo"])
 async def trigger_motor_preditivo(principal: Annotated[AuthContext, Depends(require_roles("DONO"))]):
-    """Aciona o motor preditivo para a empresa do dono autenticado."""
+    """Triggers the predictive engine for the authenticated owner's company."""
     state: MottainaiState = {
         "session_id": f"motor-{principal.empresa_id}-{int(time.time())}",
         "empresa_id": principal.empresa_id,
@@ -450,13 +456,13 @@ async def trigger_motor_preditivo(principal: Annotated[AuthContext, Depends(requ
 async def metrics_summary(
     principal: Annotated[AuthContext, Depends(require_roles("DONO"))], days: int = 7,
 ):
-    """Dashboard de observabilidade da empresa do dono autenticado."""
+    """Observability dashboard for the authenticated owner's company."""
     return MetricsResponse(data=await get_metrics_summary(principal.empresa_id, days))
 
 
 @app.get("/audit/report", tags=["Auditoria"])
 async def audit_report(principal: Annotated[AuthContext, Depends(require_roles("DONO"))]):
-    """Relatório de conformidade da empresa do dono autenticado."""
+    """Compliance report for the authenticated owner's company."""
     audit = await run_auditoria_execucoes(principal.empresa_id)
     report = await run_relatorio_conformidade(principal.empresa_id)
     return {"auditoria": audit, "relatorio": report}
@@ -470,23 +476,23 @@ async def analyze_shelf_image(
     session_id: str | None = None,
 ):
     """
-    Analisa uma foto de prateleira com visão computacional Gemini.
+    Analyzes a shelf photo with Gemini computer vision.
 
-    Retorna:
-      - Produtos identificados com quantidade estimada e posição
-      - Slots vazios (ruptura visual)
-      - % de ocupação da prateleira
-      - Cruzamento com inventário do PostgreSQL
-      - Ações recomendadas ao funcionário
-      - Relatório em texto legível
+    Returns:
+      - Identified products with estimated quantity and position
+      - Empty slots (visual stockout)
+      - Shelf occupancy %
+      - Cross-check against PostgreSQL inventory
+      - Recommended actions for the employee
+      - Readable text report
 
-    Formato: multipart/form-data
-      - image: arquivo de imagem
+    Format: multipart/form-data
+      - image: image file
       - empresa_id: int
-      - store_id: int (opcional)
-      - session_id: str (opcional — para rastreabilidade no MongoDB)
+      - store_id: int (optional)
+      - session_id: str (optional — for traceability in MongoDB)
     """
-    # Valida tipo de arquivo
+    # Validates the file type
     allowed_types = {"image/jpeg", "image/png", "image/webp", "image/gif"}
     if image.content_type not in allowed_types:
         raise HTTPException(
@@ -509,7 +515,7 @@ async def analyze_shelf_image(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sessão não encontrada.")
         conversation_id = conversation["_id"]
 
-    # Limite de 10MB
+    # 10MB limit
     MAX_SIZE = 10 * 1024 * 1024
     image_bytes = await image.read()
     if len(image_bytes) > MAX_SIZE:
@@ -554,6 +560,6 @@ async def analyze_shelf_image(
 # ─────────────────────────────────────────────
 
 async def _run_governanca_async(empresa_id: int, agent: str, action: str) -> None:
-    """Roda auditoria de acesso em background."""
+    """Runs access audit in the background."""
     from app.agents.governanca import run_controle_acesso
     await run_controle_acesso(empresa_id, agent, action)
