@@ -8,8 +8,8 @@ Note: SYSTEM_PROMPT is deliberately kept in Portuguese — it's the tuned
 instruction that makes the assistant answer Mottainai's end users in
 Portuguese, which is the product's actual language, not developer-facing code.
 """
-from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.runtime import MottainaiState, get_llm
 from app.memory.long_term import format_memory_for_prompt

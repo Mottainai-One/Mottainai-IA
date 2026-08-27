@@ -13,7 +13,7 @@ from typing import Awaitable, Callable
 
 from langgraph.graph import END, StateGraph
 
-from app.agents.runtime import MottainaiState, get_llm
+from app.agents.runtime import MottainaiState
 from app.guardrails.entrada import guardrail_entrada
 from app.guardrails.saida import guardrail_saida
 from app.memory.extractor import extract_memories
@@ -184,11 +184,11 @@ def build_graph() -> StateGraph:
     Agent nodes are injected externally to avoid circular imports.
     """
     from app.agents.cliente import node_agente_cliente
+    from app.agents.dono import node_agente_dono
     from app.agents.faq import node_agente_faq
     from app.agents.funcionario import node_agente_funcionario
-    from app.agents.dono import node_agente_dono
-    from app.agents.motor_preditivo import node_motor_preditivo
     from app.agents.juiz import node_agente_juiz
+    from app.agents.motor_preditivo import node_motor_preditivo
 
     graph = StateGraph(MottainaiState)
 

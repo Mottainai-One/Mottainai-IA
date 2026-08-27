@@ -13,7 +13,7 @@ Note: the returned dict keys/values (e.g. "total_execucoes", "periodo",
 consumed by GET /audit/report — they are kept in Portuguese, not translated
 as part of this pass.
 """
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.database.mongo import get_mongo_db

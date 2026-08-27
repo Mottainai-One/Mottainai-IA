@@ -14,7 +14,6 @@ Note: SYSTEM_PROMPT and the operational context block fed to the LLM are
 deliberately kept in Portuguese, same as the other agents.
 """
 import json
-from datetime import datetime, timezone
 
 from langchain_core.messages import HumanMessage, SystemMessage
 

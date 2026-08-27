@@ -7,7 +7,6 @@ Note: the dict keys/values returned by get_metrics_summary() (e.g.
 GET /metrics/summary API contract, asserted by tests — they are kept in
 Portuguese, not translated as part of this pass.
 """
-import time
 from datetime import datetime, timezone
 from typing import Any
 

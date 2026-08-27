@@ -6,8 +6,8 @@ perishables (heat → drinks/ice cream, rain → foot-traffic drop).
 Note: interpret_weather_for_demand() returns text injected directly into
 the Predictive Engine's LLM prompt, so its output is kept in Portuguese.
 """
+
 import httpx
-from datetime import date
 
 from app.config import get_settings
 
