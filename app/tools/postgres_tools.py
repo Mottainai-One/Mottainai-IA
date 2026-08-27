@@ -235,6 +235,94 @@ async def get_kpis(empresa_id: int) -> dict:
     }
 
 
+async def get_kpis_by_store(empresa_id: int, days_back: int = 30) -> list[dict]:
+    """
+    Per-store KPIs (revenue, disposal cost, active alerts) for benchmarking
+    stores within the same company. Used by the Owner Agent.
+    """
+    sql_revenue = """
+        SELECT
+            rs.store_id,
+            rs.name AS store_name,
+            COALESCE(SUM(si.subtotal), 0) AS revenue,
+            COUNT(DISTINCT st.sale_id) AS transactions
+        FROM mottainai.retail_store rs
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        LEFT JOIN mottainai.sales_transaction st
+            ON st.store_id = rs.store_id
+           AND st.sale_date >= (CURRENT_DATE - CAST(:days_back AS INTEGER))
+           AND st.status = 'COMPLETED'
+           AND st.deleted_at IS NULL
+        LEFT JOIN mottainai.sale_item si
+            ON si.sale_id = st.sale_id
+           AND si.sale_date = st.sale_date
+           AND si.status = 'SOLD'
+        WHERE c.company_id = :empresa_id
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+        GROUP BY rs.store_id, rs.name
+        ORDER BY revenue DESC
+    """
+    sql_losses = """
+        SELECT
+            rs.store_id,
+            COALESCE(SUM(di.disposed_quantity * b.unit_cost), 0) AS disposal_cost
+        FROM mottainai.retail_store rs
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        LEFT JOIN mottainai.disposal d
+            ON d.store_id = rs.store_id
+           AND d.created_at >= (CURRENT_DATE - CAST(:days_back AS INTEGER))
+        LEFT JOIN mottainai.disposal_item di ON di.disposal_id = d.disposal_id
+        LEFT JOIN mottainai.batch b
+            ON b.batch_id = di.batch_id
+           AND b.active = TRUE
+           AND b.deleted_at IS NULL
+        WHERE c.company_id = :empresa_id
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+        GROUP BY rs.store_id
+    """
+    sql_alerts = """
+        SELECT
+            rs.store_id,
+            COUNT(a.alert_id) AS active_alerts
+        FROM mottainai.retail_store rs
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        LEFT JOIN mottainai.alert a
+            ON a.store_id = rs.store_id
+           AND a.status = 'ACTIVE'
+        WHERE c.company_id = :empresa_id
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+        GROUP BY rs.store_id
+    """
+
+    revenue_rows = await _exec(sql_revenue, empresa_id=empresa_id, params={"days_back": days_back})
+    loss_rows = await _exec(sql_losses, empresa_id=empresa_id, params={"days_back": days_back})
+    alert_rows = await _exec(sql_alerts, empresa_id=empresa_id)
+
+    losses_by_store = {row["store_id"]: row["disposal_cost"] for row in loss_rows}
+    alerts_by_store = {row["store_id"]: row["active_alerts"] for row in alert_rows}
+
+    return [
+        {
+            "store_id": row["store_id"],
+            "store_name": row["store_name"],
+            "revenue": row["revenue"],
+            "transactions": row["transactions"],
+            "disposal_cost": losses_by_store.get(row["store_id"], Decimal("0")),
+            "active_alerts": int(alerts_by_store.get(row["store_id"], 0)),
+        }
+        for row in revenue_rows
+    ]
+
+
 async def get_inventory_status(empresa_id: int, store_id: int | None = None) -> list[dict]:
     """
     Current inventory status (stock quantity vs minimum).

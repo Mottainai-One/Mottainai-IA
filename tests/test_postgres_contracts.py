@@ -1,6 +1,6 @@
 """Contratos das consultas da IA Layer com o schema operacional v6."""
-from decimal import Decimal
 import unittest
+from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 from app.tools import postgres_tools
@@ -162,6 +162,53 @@ class PostgresSchemaContracts(unittest.IsolatedAsyncioTestCase):
         revenue_sql = execute.await_args_list[0].args[0]
         self.assertIn("st.status = 'COMPLETED'", revenue_sql)
         self.assertIn("si.status = 'SOLD'", revenue_sql)
+
+    async def test_kpis_by_store_merges_revenue_losses_and_alerts(self):
+        responses = [
+            [
+                {"store_id": 1, "store_name": "Centro", "revenue": Decimal("100.00"), "transactions": 5},
+                {"store_id": 2, "store_name": "Norte", "revenue": Decimal("50.00"), "transactions": 2},
+            ],
+            [{"store_id": 1, "disposal_cost": Decimal("10.00")}],
+            [{"store_id": 1, "active_alerts": 3}, {"store_id": 2, "active_alerts": 0}],
+        ]
+        with patch(
+            "app.tools.postgres_tools._exec",
+            new=AsyncMock(side_effect=responses),
+        ) as execute:
+            result = await postgres_tools.get_kpis_by_store(42, days_back=30)
+
+        self.assertEqual(
+            result,
+            [
+                {
+                    "store_id": 1, "store_name": "Centro", "revenue": Decimal("100.00"),
+                    "transactions": 5, "disposal_cost": Decimal("10.00"), "active_alerts": 3,
+                },
+                {
+                    "store_id": 2, "store_name": "Norte", "revenue": Decimal("50.00"),
+                    "transactions": 2, "disposal_cost": Decimal("0"), "active_alerts": 0,
+                },
+            ],
+        )
+        revenue_sql = execute.await_args_list[0].args[0]
+        self.assertIn("GROUP BY rs.store_id, rs.name", revenue_sql)
+        self.assertEqual(execute.await_args_list[0].kwargs["params"], {"days_back": 30})
+
+    async def test_kpis_by_store_defaults_missing_store_to_zero(self):
+        responses = [
+            [{"store_id": 1, "store_name": "Centro", "revenue": Decimal("0"), "transactions": 0}],
+            [],
+            [],
+        ]
+        with patch(
+            "app.tools.postgres_tools._exec",
+            new=AsyncMock(side_effect=responses),
+        ):
+            result = await postgres_tools.get_kpis_by_store(42)
+
+        self.assertEqual(result[0]["disposal_cost"], Decimal("0"))
+        self.assertEqual(result[0]["active_alerts"], 0)
 
 
 class ShelfInventoryContracts(unittest.IsolatedAsyncioTestCase):
