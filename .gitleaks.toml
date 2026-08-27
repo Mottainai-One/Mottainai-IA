@@ -1,0 +1,16 @@
+# Gitleaks configuration for Mottainai-IA.
+# Extends the default rule set and allowlists documented *placeholder* examples
+# (not real secrets) that the generic high-entropy rule would otherwise flag.
+# The values below are instructional placeholders shown in README/.env.example.
+
+title = "Mottainai-IA gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documented placeholder examples (JWT_SECRET) in README and .env.example"
+regexes = [
+  "gere-um-segredo-forte-de-32-caracteres-por-maquina",
+  "CHANGE_ME_GENERATE_A_NEW_LOCAL_JWT_SECRET",
+]
