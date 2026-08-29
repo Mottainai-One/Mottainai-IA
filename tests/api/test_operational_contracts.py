@@ -2,7 +2,7 @@
 import io
 import json
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 from fastapi import HTTPException
@@ -21,6 +21,7 @@ from interfaces.api.main import (
     app,
     chat,
     ChatRequest,
+    correlation_id_middleware,
     health_check,
     live_check,
     readiness_check,
@@ -38,6 +39,35 @@ class SettingsContractTests(unittest.TestCase):
 
         self.assertEqual(settings.postgres_dsn, "postgresql+asyncpg://mottainai:mottainai@localhost:5432/mottainai")
         self.assertEqual(settings.mongo_uri, "mongodb://localhost:27017/mottainai")
+
+
+class CorrelationIdMiddlewareTests(unittest.IsolatedAsyncioTestCase):
+    async def test_generates_and_echoes_a_new_correlation_id(self):
+        request = MagicMock()
+        request.headers.get.return_value = None
+        response = MagicMock()
+        response.headers = {}
+        call_next = AsyncMock(return_value=response)
+
+        with patch("interfaces.api.main.set_correlation_id") as set_id:
+            result = await correlation_id_middleware(request, call_next)
+
+        set_id.assert_called_once()
+        generated = set_id.call_args.args[0]
+        self.assertEqual(result.headers["X-Request-ID"], generated)
+
+    async def test_reuses_an_incoming_request_id_header(self):
+        request = MagicMock()
+        request.headers.get.return_value = "client-supplied-id"
+        response = MagicMock()
+        response.headers = {}
+        call_next = AsyncMock(return_value=response)
+
+        with patch("interfaces.api.main.set_correlation_id") as set_id:
+            result = await correlation_id_middleware(request, call_next)
+
+        set_id.assert_called_once_with("client-supplied-id")
+        self.assertEqual(result.headers["X-Request-ID"], "client-supplied-id")
 
 
 class OperationalContractTests(unittest.IsolatedAsyncioTestCase):
