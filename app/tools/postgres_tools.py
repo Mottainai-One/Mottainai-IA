@@ -6,21 +6,48 @@ etc.) and the dict keys returned by get_shelf_inventory_crosscheck
 consumed by other code and by the agents' LLM prompts — they are kept in
 Portuguese, not translated as part of this pass.
 """
+import logging
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 
 from app.database.postgres import get_pg_session
+from config.settings import get_settings
+
+settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
+@retry(
+    stop=stop_after_attempt(settings.postgres_max_retries),
+    wait=wait_exponential_jitter(),
+    retry=retry_if_exception_type(OperationalError),
+    reraise=True,
+    before_sleep=lambda retry_state: logger.warning(
+        "Postgres query failed (attempt %s/%s), retrying: %s",
+        retry_state.attempt_number, settings.postgres_max_retries, retry_state.outcome.exception(),
+    ),
+)
 async def _exec(
     sql: str,
     *,
     empresa_id: int,
     params: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Executes a query scoped to the authenticated tenant."""
+    """
+    Executes a query scoped to the authenticated tenant.
+
+    Retries on OperationalError (SQLAlchemy's category for a transient
+    connection failure — dropped connection, connection refused, timeout)
+    with exponential backoff + jitter, same pattern already used for LLM
+    provider calls (app/agents/runtime.get_llm). Every query here is a
+    read, so retrying is always safe — nothing here can double-apply a
+    side effect. Does NOT retry on query errors (bad SQL, a constraint
+    violation surfaced through a stored function) — those aren't transient.
+    """
     if isinstance(empresa_id, bool) or empresa_id < 1:
         raise ValueError("empresa_id must be a positive integer.")
 
