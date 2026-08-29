@@ -2,6 +2,7 @@
 import io
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -25,6 +26,7 @@ from interfaces.api.main import (
     live_check,
     readiness_check,
     trigger_motor_preditivo,
+    unhandled_exception_handler,
 )
 
 
@@ -38,6 +40,23 @@ class SettingsContractTests(unittest.TestCase):
 
         self.assertEqual(settings.postgres_dsn, "postgresql+asyncpg://mottainai:mottainai@localhost:5432/mottainai")
         self.assertEqual(settings.mongo_uri, "mongodb://localhost:27017/mottainai")
+
+
+class UnhandledExceptionHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_logs_and_returns_a_sanitized_portuguese_500(self):
+        request = SimpleNamespace(method="GET", url=SimpleNamespace(path="/audit/report"))
+        error = RuntimeError("connection to postgresql://mottainai:s3cr3t@db failed")
+
+        with patch("interfaces.api.main.logger") as logger:
+            response = await unhandled_exception_handler(request, error)
+
+        self.assertEqual(response.status_code, 500)
+        body = json.loads(response.body)
+        self.assertNotIn("s3cr3t", body["detail"])
+        self.assertNotIn("postgresql://", body["detail"])
+        self.assertEqual(body["detail"], "Erro interno inesperado. Tente novamente ou contate o suporte.")
+        logger.error.assert_called_once()
+        self.assertIn("/audit/report", logger.error.call_args.args)
 
 
 class OperationalContractTests(unittest.IsolatedAsyncioTestCase):
