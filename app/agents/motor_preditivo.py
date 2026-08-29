@@ -39,13 +39,18 @@ async def node_motor_preditivo(state: MottainaiState) -> MottainaiState:
     """
     Predictive Engine node in the graph.
     Can also be invoked directly via /motor-preditivo/trigger.
+
+    Runs company-wide by default. If state["store_id"] is set, every query
+    is scoped to that single store instead — e.g. to run the analysis for
+    one location instead of the whole chain.
     """
     empresa_id = state["empresa_id"]
+    store_id = state.get("store_id")
 
     # 1. Postgres data
-    expiring = await get_expiring_batches(empresa_id, days_ahead=14)
-    sales = await get_sales_summary(empresa_id, days_back=60)
-    alerts = await get_stock_alerts(empresa_id)
+    expiring = await get_expiring_batches(empresa_id, days_ahead=14, store_id=store_id)
+    sales = await get_sales_summary(empresa_id, days_back=60, store_id=store_id)
+    alerts = await get_stock_alerts(empresa_id, store_id=store_id)
 
     # 2. External source — Open-Meteo via MCP (A2A)
     try:
@@ -64,7 +69,10 @@ Dados climáticos atuais (fonte: Open-Meteo via MCP — {forecast['source']}):
         weather_context = f"Dados climáticos indisponíveis: {e}"
 
     # 3. Full context for the LLM (kept in Portuguese, see module docstring)
+    scope_line = f"Loja específica (store_id={store_id})" if store_id else "Todas as lojas da empresa"
     context = f"""
+ESCOPO DA ANÁLISE: {scope_line}
+
 LOTES COM RISCO DE VENCIMENTO (próximos 14 dias):
 {json.dumps(expiring, default=str, ensure_ascii=False, indent=2)}
 
@@ -79,7 +87,7 @@ ALERTAS ATIVOS:
 
     messages = [
         SystemMessage(content=f"{SYSTEM_PROMPT}\n\n--- Dados operacionais ---\n{context}"),
-        HumanMessage(content=f"Execute análise completa para empresa_id={empresa_id}. Gere: previsão de demanda, riscos de perda, ações sugeridas e pré-lista de abastecimento."),
+        HumanMessage(content=f"Execute análise completa para empresa_id={empresa_id} ({scope_line}). Gere: previsão de demanda, riscos de perda, ações sugeridas e pré-lista de abastecimento."),
     ]
 
     llm = get_llm(temperature=0.1)  # low temperature for technical analysis
