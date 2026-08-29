@@ -53,6 +53,28 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     return float(np.dot(va, vb) / denom)
 
 
+def batch_cosine_similarity(query_vec: list[float], embeddings: list[list[float]]) -> list[float]:
+    """
+    Cosine similarity between one query vector and many chunk embeddings at
+    once, via a single matrix-vector product instead of a Python loop
+    calling cosine_similarity() per chunk (which also redundantly
+    recomputed the query vector's own norm on every single iteration).
+    Same math as cosine_similarity(), batched — not an approximation.
+    """
+    if not embeddings:
+        return []
+
+    query = np.asarray(query_vec, dtype=np.float64)
+    query_norm = np.linalg.norm(query)
+    matrix = np.asarray(embeddings, dtype=np.float64)  # shape (n_chunks, dim)
+    chunk_norms = np.linalg.norm(matrix, axis=1)
+
+    denom = chunk_norms * query_norm
+    numerator = matrix @ query
+    scores = np.divide(numerator, denom, out=np.zeros_like(numerator), where=denom != 0)
+    return scores.tolist()
+
+
 async def retrieve(
     query: str,
     empresa_id: int,
@@ -92,20 +114,21 @@ async def retrieve(
     if not chunks:
         return []
 
-    # Computes scores
-    scored = []
-    for chunk in chunks:
-        score = cosine_similarity(query_vec, chunk["embedding"])
-        if score >= min_score:
-            scored.append(
-                {
-                    "text": chunk["text"],
-                    "score": round(score, 4),
-                    "documentId": str(chunk["documentId"]),
-                    "chunk": chunk["chunk"],
-                    "metadata": chunk.get("metadata", {}),
-                }
-            )
+    # Computes all scores in one batched matrix operation instead of a
+    # per-chunk Python loop (see batch_cosine_similarity's docstring).
+    scores = batch_cosine_similarity(query_vec, [chunk["embedding"] for chunk in chunks])
+
+    scored = [
+        {
+            "text": chunk["text"],
+            "score": round(score, 4),
+            "documentId": str(chunk["documentId"]),
+            "chunk": chunk["chunk"],
+            "metadata": chunk.get("metadata", {}),
+        }
+        for chunk, score in zip(chunks, scores)
+        if score >= min_score
+    ]
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:top_k]
