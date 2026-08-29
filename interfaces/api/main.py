@@ -113,6 +113,7 @@ are verified claims; the API does not accept identity in the payload.
     license_info={"name": "Private"},
     lifespan=lifespan,
     openapi_tags=[
+        {"name": "Autenticação", "description": "Token lifecycle (revocation)"},
         {"name": "Chat", "description": "Interaction with the AI agents"},
         {"name": "Motor Preditivo", "description": "Automatic stock analysis and suggestion generation"},
         {"name": "Prateleira", "description": "Computer vision for shelf analysis"},
@@ -234,6 +235,32 @@ async def a2a_message(payload: dict, authorization: str | None = Header(default=
 async def mcp_rpc(payload: dict, authorization: str | None = Header(default=None)):
     """HTTP transport for the MCP initialize, tools/list and tools/call methods."""
     return await dispatch_mcp(payload, authorization)
+
+
+@app.post("/auth/logout", tags=["Autenticação"])
+async def logout(principal: Annotated[AuthContext, Depends(require_auth)]):
+    """
+    Revokes the caller's own current access token before its natural
+    expiry. Tokens minted without a "jti" claim can't be individually
+    revoked this way.
+    """
+    if not principal.jti or not principal.exp:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Este token não possui identificador (jti) e não pode ser revogado individualmente.",
+        )
+
+    from app.security.auth import revoke_token
+
+    try:
+        await revoke_token(principal.jti, principal.exp)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Não foi possível revogar o token no momento. Tente novamente.",
+        ) from exc
+
+    return {"status": "revoked"}
 
 
 @app.post("/chat", response_model=ChatResponse, tags=["Chat"])

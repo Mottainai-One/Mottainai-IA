@@ -23,6 +23,7 @@ from interfaces.api.main import (
     ChatRequest,
     health_check,
     live_check,
+    logout,
     readiness_check,
     trigger_motor_preditivo,
 )
@@ -106,6 +107,32 @@ class OperationalContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("to_regclass('mottainai.sale_payment')", OPERATIONAL_SCHEMA_READY_QUERY)
         self.assertIn("column_name = 'status'", OPERATIONAL_SCHEMA_READY_QUERY)
         self.assertIn("to_regprocedure('mottainai.fn_get_current_company_id()')", statements[0])
+
+
+class LogoutRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_revokes_the_callers_own_token(self):
+        principal = AuthContext(usuario_id=7, empresa_id=42, role="DONO", jti="tok-1", exp=9999999999)
+        revoke = AsyncMock()
+        with patch("app.security.auth.revoke_token", new=revoke):
+            result = await logout(principal)
+
+        revoke.assert_awaited_once_with("tok-1", 9999999999)
+        self.assertEqual(result, {"status": "revoked"})
+
+    async def test_rejects_a_token_without_jti(self):
+        principal = AuthContext(usuario_id=7, empresa_id=42, role="DONO")
+        with self.assertRaises(HTTPException) as context:
+            await logout(principal)
+
+        self.assertEqual(context.exception.status_code, 400)
+
+    async def test_returns_503_when_revocation_cannot_be_persisted(self):
+        principal = AuthContext(usuario_id=7, empresa_id=42, role="DONO", jti="tok-1", exp=9999999999)
+        with patch("app.security.auth.revoke_token", new=AsyncMock(side_effect=ConnectionError("down"))):
+            with self.assertRaises(HTTPException) as context:
+                await logout(principal)
+
+        self.assertEqual(context.exception.status_code, 503)
 
 
 class ProtectedOperationalRoutesTests(unittest.IsolatedAsyncioTestCase):
