@@ -24,7 +24,9 @@ from interfaces.api.main import (
     health_check,
     live_check,
     readiness_check,
+    RagDocumentUploadRequest,
     trigger_motor_preditivo,
+    upload_rag_document,
 )
 
 
@@ -106,6 +108,38 @@ class OperationalContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("to_regclass('mottainai.sale_payment')", OPERATIONAL_SCHEMA_READY_QUERY)
         self.assertIn("column_name = 'status'", OPERATIONAL_SCHEMA_READY_QUERY)
         self.assertIn("to_regprocedure('mottainai.fn_get_current_company_id()')", statements[0])
+
+
+class RagDocumentUploadRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ingests_the_document_for_the_authenticated_company(self):
+        tool = AsyncMock(return_value={"document_id": "d1", "slug": "faq-x", "chunks": 3})
+        body = RagDocumentUploadRequest(slug="faq-x", title="FAQ X", source="faq", text="algo")
+
+        with patch("app.rag.ingestion.ingest_document", new=tool):
+            result = await upload_rag_document(body, AuthContext(usuario_id=7, empresa_id=42, role="GERENTE"))
+
+        tool.assert_awaited_once_with(
+            empresa_id=42, slug="faq-x", title="FAQ X", source="faq", text="algo",
+        )
+        self.assertEqual(result["chunks"], 3)
+
+    async def test_returns_409_for_a_duplicate_slug(self):
+        from app.rag.ingestion import DuplicateSlugError
+
+        body = RagDocumentUploadRequest(slug="ja-existe", title="T", source="faq", text="algo")
+        with patch("app.rag.ingestion.ingest_document", new=AsyncMock(side_effect=DuplicateSlugError("dup"))):
+            with self.assertRaises(HTTPException) as context:
+                await upload_rag_document(body, AuthContext(usuario_id=7, empresa_id=42, role="DONO"))
+
+        self.assertEqual(context.exception.status_code, 409)
+
+    async def test_returns_422_when_no_chunks_are_produced(self):
+        body = RagDocumentUploadRequest(slug="vazio", title="T", source="faq", text="algo")
+        with patch("app.rag.ingestion.ingest_document", new=AsyncMock(side_effect=ValueError("sem chunks"))):
+            with self.assertRaises(HTTPException) as context:
+                await upload_rag_document(body, AuthContext(usuario_id=7, empresa_id=42, role="DONO"))
+
+        self.assertEqual(context.exception.status_code, 422)
 
 
 class ProtectedOperationalRoutesTests(unittest.IsolatedAsyncioTestCase):

@@ -116,6 +116,7 @@ are verified claims; the API does not accept identity in the payload.
         {"name": "Chat", "description": "Interaction with the AI agents"},
         {"name": "Motor Preditivo", "description": "Automatic stock analysis and suggestion generation"},
         {"name": "Prateleira", "description": "Computer vision for shelf analysis"},
+        {"name": "RAG", "description": "Knowledge-base document ingestion"},
         {"name": "Métricas", "description": "Observability, cost and performance of the agents"},
         {"name": "Auditoria", "description": "Compliance and governance of AI decisions"},
         {"name": "Infra", "description": "Health check and infrastructure status"},
@@ -475,6 +476,49 @@ async def audit_report(principal: Annotated[AuthContext, Depends(require_roles("
     audit = await run_auditoria_execucoes(principal.empresa_id)
     report = await run_relatorio_conformidade(principal.empresa_id)
     return {"auditoria": audit, "relatorio": report}
+
+
+class RagDocumentUploadRequest(BaseModel):
+    slug: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-z0-9-]+$", description="Identificador único (URL-safe) do documento")
+    title: str = Field(..., min_length=1, max_length=200)
+    source: str = Field(..., min_length=1, max_length=100, description="Ex: manual_operacional, faq, politica_interna")
+    text: str = Field(..., min_length=1, max_length=50_000)
+
+    model_config = {"extra": "forbid", "json_schema_extra": {"examples": [{"value": {
+        "slug": "politica-troca-devolucao",
+        "title": "Política de Troca e Devolução",
+        "source": "manual_operacional",
+        "text": "Produtos podem ser trocados em até 7 dias...",
+    }}]}}
+
+
+@app.post("/rag/documents", tags=["RAG"], status_code=status.HTTP_201_CREATED)
+async def upload_rag_document(
+    body: RagDocumentUploadRequest,
+    principal: Annotated[AuthContext, Depends(require_roles("GERENTE", "DONO"))],
+):
+    """
+    Adds a new document to the RAG knowledge base, chunked and embedded
+    immediately — searchable by the next chat message, not after a
+    separate script happens to run. Previously the only way to add
+    knowledge-base content was to hand-edit scripts/setup_mongo.py.
+    """
+    from app.rag.ingestion import DuplicateSlugError, ingest_document
+
+    try:
+        result = await ingest_document(
+            empresa_id=principal.empresa_id,
+            slug=body.slug,
+            title=body.title,
+            source=body.source,
+            text=body.text,
+        )
+    except DuplicateSlugError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    return result
 
 
 @app.post("/shelf/analyze", tags=["Prateleira"])
