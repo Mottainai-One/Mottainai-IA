@@ -173,6 +173,51 @@ async def get_sales_summary(empresa_id: int, days_back: int = 30) -> list[dict]:
     return await _exec(sql, empresa_id=empresa_id, params={"days_back": days_back})
 
 
+async def get_daily_sales_series(
+    empresa_id: int,
+    product_ids: list[int],
+    days_back: int = 28,
+) -> list[dict]:
+    """
+    Per-product, per-day sold quantity for the given products over the last
+    `days_back` days. Used by the Predictive Engine to compute a real
+    moving-average/trend demand forecast (as opposed to guessing from a raw
+    aggregate dump).
+    """
+    if not product_ids:
+        return []
+
+    sql = """
+        SELECT
+            p.product_id,
+            st.sale_date,
+            SUM(si.quantity_sold) AS quantity_sold
+        FROM mottainai.sales_transaction st
+        JOIN mottainai.sale_item si ON si.sale_id = st.sale_id AND si.sale_date = st.sale_date
+        JOIN mottainai.product p ON p.product_id = si.product_id
+        JOIN mottainai.retail_store rs ON rs.store_id = st.store_id
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        WHERE c.company_id = :empresa_id
+          AND st.sale_date >= (CURRENT_DATE - CAST(:days_back AS INTEGER))
+          AND st.status = 'COMPLETED'
+          AND st.deleted_at IS NULL
+          AND p.product_id = ANY(:product_ids)
+          AND p.active = TRUE
+          AND p.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+        GROUP BY p.product_id, st.sale_date
+        ORDER BY p.product_id, st.sale_date
+    """
+    return await _exec(
+        sql,
+        empresa_id=empresa_id,
+        params={"days_back": days_back, "product_ids": product_ids},
+    )
+
+
 async def get_kpis(empresa_id: int) -> dict:
     """
     Consolidated management KPIs.
