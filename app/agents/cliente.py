@@ -8,12 +8,8 @@ Note: SYSTEM_PROMPT is deliberately kept in Portuguese — it's the tuned
 instruction that makes the assistant answer Mottainai's end users in
 Portuguese, which is the product's actual language, not developer-facing code.
 """
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
-
-from app.agents.runtime import MottainaiState, get_llm
-from app.memory.long_term import format_memory_for_prompt
-from app.rag.retriever import retrieve_with_sources
+from app.agents.rag_chat_base import run_rag_chat_agent
+from app.agents.runtime import MottainaiState
 
 SYSTEM_PROMPT = """Você é o Agente Cliente do Mottainai — assistente do aplicativo de varejo sustentável.
 
@@ -35,33 +31,9 @@ Se a pergunta estiver fora do escopo do Mottainai, diga: "Posso ajudar apenas co
 
 async def node_agente_cliente(state: MottainaiState) -> MottainaiState:
     """Customer Agent node in the LangGraph graph."""
-    query = state["sanitized_input"]
-    empresa_id = state["empresa_id"]
-
-    # RAG: fetches relevant context
-    rag_context, sources = await retrieve_with_sources(query, empresa_id)
-
-    # Long-term memory
-    mem_context = format_memory_for_prompt(state["memory"])
-
-    # Builds the prompt (labels kept in Portuguese, see module docstring)
-    messages = [
-        SystemMessage(content=f"{SYSTEM_PROMPT}\n\n--- Memória do usuário ---\n{mem_context}\n\n--- Informações disponíveis ---\n{rag_context}"),
-        *state["history"][-10:],  # last 10 messages of the history
-        HumanMessage(content=query),
-    ]
-
-    llm: BaseChatModel = get_llm(temperature=0.6)
-    response = await llm.ainvoke(messages)
-    content = response.content
-
-    # Counts tokens for observability
-    usage = getattr(response, "usage_metadata", None) or {}
-
-    return {
-        **state,
-        "agent_response": content,
-        "sources": sources,
-        "input_tokens": usage.get("input_tokens", 0),
-        "output_tokens": usage.get("output_tokens", 0),
-    }
+    return await run_rag_chat_agent(
+        state,
+        system_prompt=SYSTEM_PROMPT,
+        temperature=0.6,
+        history_window=10,
+    )
