@@ -3,6 +3,16 @@ Employee Agent — serves operators, stock clerks and managers.
 Skills: System manual, procedures, stock, inventory, goods receiving, alerts.
 Uses Postgres (read) + Redis (notifications) + local RAG. Writes memory.
 
+Registering a receipt or a disposal is a write action, so it is deliberately
+NOT something this chat node decides to do on its own from free text — it
+goes through the dedicated, role-gated endpoints
+(POST /funcionario/receber-mercadoria, POST /funcionario/descartar-lote,
+see interfaces/api/main.py), which call app.tools.postgres_tools directly.
+The agent's job here is only to tell the employee that these actions exist
+and how to use them, matching every other agent's node in the graph, which
+gathers data and narrates — it doesn't independently take action against
+the database.
+
 Note: SYSTEM_PROMPT and the operational context block fed to the LLM are
 deliberately kept in Portuguese, same as the other agents.
 """
@@ -25,6 +35,7 @@ Suas responsabilidades:
 - Apresentar dados de forma objetiva: números exatos, prioridades claras.
 - NÃO inventar dados de estoque, quantidades ou validades.
 - Para ações críticas (descartes, transferências), orientar sobre o procedimento correto.
+- Você NÃO registra recebimentos ou descartes diretamente pelo chat. Se o usuário quiser fazer isso, informe que a ação está disponível nas telas/rotas dedicadas do sistema para receber mercadoria ou descartar um lote, e explique quais dados serão necessários (loja, lote, quantidade e, no caso de descarte, o motivo).
 - Alertas críticos devem sempre ser destacados no início da resposta.
 - NUNCA mencionar nomes internos de sistemas, agentes, bases de dados ou tecnologias (ex: "PostgreSQL", "RAG", "contexto") — fale como uma única assistente operacional do Mottainai.
 - Você SÓ responde assuntos operacionais do Mottainai (estoque, inventário, alertas, procedimentos). Se a pergunta for sobre qualquer outro assunto, recuse educadamente e explique que só pode ajudar com temas operacionais do Mottainai.

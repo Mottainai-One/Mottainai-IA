@@ -11,6 +11,7 @@ app/integrations/mcp_a2a.py, which targets external systems, not end users.
 import asyncio
 import time
 from contextlib import asynccontextmanager
+from decimal import Decimal
 
 # SSL fix for macOS (Homebrew Python doesn't use the native Keychain by default)
 try:
@@ -459,6 +460,81 @@ async def trigger_motor_preditivo(principal: Annotated[AuthContext, Depends(requ
         "judge_score": result.get("judge_score"),
         "sources": result.get("sources", []),
     }
+
+
+class DescartarLoteRequest(BaseModel):
+    store_id: int = Field(..., gt=0)
+    batch_id: int = Field(..., gt=0)
+    quantity: Decimal = Field(..., gt=0, description="Quantidade descartada")
+    reason: str = Field(..., min_length=1, max_length=100)
+    observation: str | None = Field(None, max_length=2000)
+
+    model_config = {"extra": "forbid"}
+
+
+class ReceberMercadoriaRequest(BaseModel):
+    store_id: int = Field(..., gt=0)
+    batch_id: int = Field(..., gt=0)
+    quantity: Decimal = Field(..., gt=0, description="Quantidade recebida")
+    observation: str | None = Field(None, max_length=2000)
+
+    model_config = {"extra": "forbid"}
+
+
+@app.post("/funcionario/descartar-lote", tags=["Funcionário"])
+async def descartar_lote(
+    body: DescartarLoteRequest,
+    principal: Annotated[AuthContext, Depends(require_roles("ESTOQUISTA", "GERENTE", "DONO"))],
+):
+    """
+    Registers a batch disposal: writes the disposal/disposal_item audit
+    rows and atomically decrements the matching inventory row (with its own
+    inventory_movement audit trail).
+    """
+    from app.tools.postgres_tools import discard_batch
+
+    try:
+        result = await discard_batch(
+            empresa_id=principal.empresa_id,
+            store_id=body.store_id,
+            batch_id=body.batch_id,
+            employee_id=principal.usuario_id,
+            quantity=body.quantity,
+            reason=body.reason,
+            observation=body.observation,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    return result
+
+
+@app.post("/funcionario/receber-mercadoria", tags=["Funcionário"])
+async def receber_mercadoria(
+    body: ReceberMercadoriaRequest,
+    principal: Annotated[AuthContext, Depends(require_roles("ESTOQUISTA", "GERENTE", "DONO"))],
+):
+    """
+    Registers receipt of goods for a batch already tracked in inventory at
+    that store (e.g. confirming a restock). Does not create new products or
+    batches — that's a separate, bigger feature intentionally left out of
+    scope here.
+    """
+    from app.tools.postgres_tools import receive_inventory
+
+    try:
+        result = await receive_inventory(
+            empresa_id=principal.empresa_id,
+            store_id=body.store_id,
+            batch_id=body.batch_id,
+            employee_id=principal.usuario_id,
+            quantity=body.quantity,
+            observation=body.observation,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    return result
 
 
 @app.get("/metrics/summary", tags=["Métricas"])
