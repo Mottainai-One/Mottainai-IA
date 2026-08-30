@@ -111,6 +111,25 @@ class PostgresSchemaContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(execute.await_args.kwargs["empresa_id"], 42)
         self.assertEqual(execute.await_args.kwargs["params"]["days_back"], 60)
 
+    async def test_daily_sales_series_binds_product_ids_and_skips_query_when_empty(self):
+        with patch(
+            "app.tools.postgres_tools._exec",
+            new=AsyncMock(return_value=[]),
+        ) as execute:
+            empty_result = await postgres_tools.get_daily_sales_series(42, [], days_back=28)
+            await postgres_tools.get_daily_sales_series(42, [10, 20], days_back=28)
+
+        self.assertEqual(empty_result, [])
+        execute.assert_awaited_once()  # the empty-product-ids call never touched the DB
+        sql = execute.await_args.args[0]
+        self.assertIn("p.product_id = ANY(:product_ids)", sql)
+        self.assertIn("GROUP BY p.product_id, st.sale_date", sql)
+        self.assertEqual(execute.await_args.kwargs["empresa_id"], 42)
+        self.assertEqual(
+            execute.await_args.kwargs["params"],
+            {"days_back": 28, "product_ids": [10, 20]},
+        )
+
     async def test_inventory_query_keeps_store_filter_bound(self):
         with patch(
             "app.tools.postgres_tools._exec",
