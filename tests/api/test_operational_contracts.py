@@ -2,6 +2,7 @@
 import io
 import json
 import unittest
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -22,10 +23,14 @@ from interfaces.api.main import (
     app,
     chat,
     ChatRequest,
+    descartar_lote,
+    DescartarLoteRequest,
     health_check,
     live_check,
     logout,
     readiness_check,
+    receber_mercadoria,
+    ReceberMercadoriaRequest,
     trigger_motor_preditivo,
     unhandled_exception_handler,
 )
@@ -126,6 +131,54 @@ class OperationalContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("to_regclass('mottainai.sale_payment')", OPERATIONAL_SCHEMA_READY_QUERY)
         self.assertIn("column_name = 'status'", OPERATIONAL_SCHEMA_READY_QUERY)
         self.assertIn("to_regprocedure('mottainai.fn_get_current_company_id()')", statements[0])
+
+
+class EmployeeWriteRoutesTests(unittest.IsolatedAsyncioTestCase):
+    async def test_descartar_lote_calls_the_tool_with_the_authenticated_employee(self):
+        tool = AsyncMock(return_value={"disposal_id": 1, "new_inventory_balance": Decimal("2")})
+        body = DescartarLoteRequest(store_id=1, batch_id=7, quantity=Decimal("3"), reason="vencido")
+
+        with patch("app.tools.postgres_tools.discard_batch", new=tool):
+            result = await descartar_lote(body, AuthContext(usuario_id=9, empresa_id=42, role="ESTOQUISTA"))
+
+        tool.assert_awaited_once_with(
+            empresa_id=42, store_id=1, batch_id=7, employee_id=9,
+            quantity=Decimal("3"), reason="vencido", observation=None,
+        )
+        self.assertEqual(result["disposal_id"], 1)
+
+    async def test_descartar_lote_returns_404_when_inventory_not_found(self):
+        with patch("app.tools.postgres_tools.discard_batch", new=AsyncMock(side_effect=ValueError("não encontrado"))):
+            with self.assertRaises(HTTPException) as context:
+                await descartar_lote(
+                    DescartarLoteRequest(store_id=1, batch_id=7, quantity=Decimal("3"), reason="vencido"),
+                    AuthContext(usuario_id=9, empresa_id=42, role="ESTOQUISTA"),
+                )
+
+        self.assertEqual(context.exception.status_code, 404)
+
+    async def test_receber_mercadoria_calls_the_tool_with_the_authenticated_employee(self):
+        tool = AsyncMock(return_value={"new_inventory_balance": Decimal("50")})
+        body = ReceberMercadoriaRequest(store_id=1, batch_id=7, quantity=Decimal("20"))
+
+        with patch("app.tools.postgres_tools.receive_inventory", new=tool):
+            result = await receber_mercadoria(body, AuthContext(usuario_id=9, empresa_id=42, role="GERENTE"))
+
+        tool.assert_awaited_once_with(
+            empresa_id=42, store_id=1, batch_id=7, employee_id=9,
+            quantity=Decimal("20"), observation=None,
+        )
+        self.assertEqual(result["new_inventory_balance"], Decimal("50"))
+
+    async def test_receber_mercadoria_returns_404_when_inventory_not_found(self):
+        with patch("app.tools.postgres_tools.receive_inventory", new=AsyncMock(side_effect=ValueError("não encontrado"))):
+            with self.assertRaises(HTTPException) as context:
+                await receber_mercadoria(
+                    ReceberMercadoriaRequest(store_id=1, batch_id=7, quantity=Decimal("20")),
+                    AuthContext(usuario_id=9, empresa_id=42, role="GERENTE"),
+                )
+
+        self.assertEqual(context.exception.status_code, 404)
 
 
 class LogoutRouteTests(unittest.IsolatedAsyncioTestCase):
