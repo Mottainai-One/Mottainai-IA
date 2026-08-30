@@ -2,6 +2,7 @@
 """Gera um JWT local para demonstração; não expõe emissão de token pela API."""
 import argparse
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -27,7 +28,13 @@ def main() -> None:
 
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expiration_minutes)
     token = jwt.encode(
-        {"sub": str(args.usuario_id), "empresa_id": args.empresa_id, "role": args.role, "exp": expires_at},
+        {
+            "sub": str(args.usuario_id),
+            "empresa_id": args.empresa_id,
+            "role": args.role,
+            "exp": expires_at,
+            "jti": str(uuid.uuid4()),  # lets POST /auth/logout revoke this specific token
+        },
         settings.jwt_secret,
         algorithm=settings.jwt_algorithm,
     )

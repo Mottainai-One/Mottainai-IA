@@ -3,6 +3,7 @@ import io
 import json
 import unittest
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -26,10 +27,12 @@ from interfaces.api.main import (
     DescartarLoteRequest,
     health_check,
     live_check,
+    logout,
     readiness_check,
     receber_mercadoria,
     ReceberMercadoriaRequest,
     trigger_motor_preditivo,
+    unhandled_exception_handler,
 )
 
 
@@ -43,6 +46,23 @@ class SettingsContractTests(unittest.TestCase):
 
         self.assertEqual(settings.postgres_dsn, "postgresql+asyncpg://mottainai:mottainai@localhost:5432/mottainai")
         self.assertEqual(settings.mongo_uri, "mongodb://localhost:27017/mottainai")
+
+
+class UnhandledExceptionHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_logs_and_returns_a_sanitized_portuguese_500(self):
+        request = SimpleNamespace(method="GET", url=SimpleNamespace(path="/audit/report"))
+        error = RuntimeError("connection to postgresql://mottainai:s3cr3t@db failed")
+
+        with patch("interfaces.api.main.logger") as logger:
+            response = await unhandled_exception_handler(request, error)
+
+        self.assertEqual(response.status_code, 500)
+        body = json.loads(response.body)
+        self.assertNotIn("s3cr3t", body["detail"])
+        self.assertNotIn("postgresql://", body["detail"])
+        self.assertEqual(body["detail"], "Erro interno inesperado. Tente novamente ou contate o suporte.")
+        logger.error.assert_called_once()
+        self.assertIn("/audit/report", logger.error.call_args.args)
 
 
 class OperationalContractTests(unittest.IsolatedAsyncioTestCase):
@@ -159,6 +179,32 @@ class EmployeeWriteRoutesTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertEqual(context.exception.status_code, 404)
+
+
+class LogoutRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_revokes_the_callers_own_token(self):
+        principal = AuthContext(usuario_id=7, empresa_id=42, role="DONO", jti="tok-1", exp=9999999999)
+        revoke = AsyncMock()
+        with patch("app.security.auth.revoke_token", new=revoke):
+            result = await logout(principal)
+
+        revoke.assert_awaited_once_with("tok-1", 9999999999)
+        self.assertEqual(result, {"status": "revoked"})
+
+    async def test_rejects_a_token_without_jti(self):
+        principal = AuthContext(usuario_id=7, empresa_id=42, role="DONO")
+        with self.assertRaises(HTTPException) as context:
+            await logout(principal)
+
+        self.assertEqual(context.exception.status_code, 400)
+
+    async def test_returns_503_when_revocation_cannot_be_persisted(self):
+        principal = AuthContext(usuario_id=7, empresa_id=42, role="DONO", jti="tok-1", exp=9999999999)
+        with patch("app.security.auth.revoke_token", new=AsyncMock(side_effect=ConnectionError("down"))):
+            with self.assertRaises(HTTPException) as context:
+                await logout(principal)
+
+        self.assertEqual(context.exception.status_code, 503)
 
 
 class ProtectedOperationalRoutesTests(unittest.IsolatedAsyncioTestCase):
