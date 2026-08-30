@@ -118,7 +118,7 @@ ALERTAS ATIVOS:
         "agent_response": content,
         "sources": [
             {"type": "sql", "ref": "mottainai.batch + sales_transaction + alert", "score": None},
-            {"type": "calc", "ref": "app.analytics.forecasting (média móvel ponderada com tendência)", "score": None},
+            {"type": "other", "ref": "app.analytics.forecasting (média móvel ponderada com tendência)", "score": None},
             {"type": "api", "ref": "Open-Meteo (open-meteo.com) — CC BY 4.0", "score": None},
         ],
         "input_tokens": usage.get("input_tokens", 0),
