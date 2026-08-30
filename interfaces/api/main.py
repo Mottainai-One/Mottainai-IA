@@ -58,9 +58,18 @@ from app.memory.short_term import (
     load_history,
 )
 from app.observability.executions import record_agent_execution
+from app.observability.logging_setup import (
+    configure_logging,
+    new_correlation_id,
+    set_correlation_id,
+)
 from app.observability.metrics import get_metrics_summary, record_execution_metrics
 from app.security.auth import AuthContext, require_auth, require_roles
 from config.settings import get_settings
+
+settings = get_settings()
+configure_logging()
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
 # Lifespan (startup/shutdown)
@@ -83,9 +92,6 @@ async def lifespan(app: FastAPI):
         from app.database.redis_client import close_redis_pool
         await close_redis_pool()
 
-
-settings = get_settings()
-logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Mottainai IA Layer",
@@ -126,6 +132,21 @@ are verified claims; the API does not accept identity in the payload.
         {"name": "Infra", "description": "Health check and infrastructure status"},
     ],
 )
+
+
+@app.middleware("http")
+async def correlation_id_middleware(request: Request, call_next):
+    """
+    Assigns a correlation id to every request (reuses an incoming
+    X-Request-ID if the caller already has one), so every log line emitted
+    while handling it — guardrails, supervisor routing, the agent, the
+    Judge — can be grepped together. Echoed back in the response header.
+    """
+    correlation_id = request.headers.get("x-request-id") or new_correlation_id()
+    set_correlation_id(correlation_id)
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = correlation_id
+    return response
 
 
 # ─────────────────────────────────────────────

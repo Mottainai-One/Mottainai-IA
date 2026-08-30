@@ -8,6 +8,7 @@ Flow:
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Awaitable, Callable
 
@@ -19,6 +20,8 @@ from app.guardrails.saida import guardrail_saida
 from app.memory.extractor import extract_memories
 from app.memory.long_term import load_memory, update_memory
 from app.memory.short_term import get_or_create_conversation, load_history, save_message
+
+logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
 # Graph nodes
@@ -164,12 +167,27 @@ def _route_after_judge(state: MottainaiState) -> str:
 
 
 def _instrument_node(name: str, node: Callable[[MottainaiState], Awaitable[MottainaiState]]):
-    """Measures each step of the graph without changing the agent's behavior."""
+    """Measures and logs each step of the graph without changing the agent's behavior.
+
+    Deliberately does not log user_input/agent_response (conversation
+    content) — only the node name, tenant and latency, same boundary the
+    rest of this codebase already draws around what's safe to surface in
+    logs/metrics vs. what stays inside the guardrailed response itself.
+    """
     async def instrumented(state: MottainaiState) -> MottainaiState:
         started = time.perf_counter()
-        result = await node(state)
+        empresa_id = state.get("empresa_id")
+        logger.info("node=%s empresa_id=%s status=started", name, empresa_id)
+        try:
+            result = await node(state)
+        except Exception:
+            elapsed = round((time.perf_counter() - started) * 1000, 2)
+            logger.exception("node=%s empresa_id=%s status=failed latency_ms=%s", name, empresa_id, elapsed)
+            raise
+        elapsed = round((time.perf_counter() - started) * 1000, 2)
+        logger.info("node=%s empresa_id=%s status=ok latency_ms=%s", name, empresa_id, elapsed)
         timings = dict(result.get("node_latencies_ms", state.get("node_latencies_ms", {})))
-        timings[name] = round((time.perf_counter() - started) * 1000, 2)
+        timings[name] = elapsed
         return {**result, "node_latencies_ms": timings}
     return instrumented
 
