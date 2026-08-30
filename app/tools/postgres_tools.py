@@ -1,4 +1,12 @@
-"""Read-only queries against the Mottainai v6 operational schema.
+"""Queries against the Mottainai v6 operational schema.
+
+Mostly read-only. The two write operations at the bottom (discard_batch,
+receive_inventory) are deliberately narrow: they act on an EXISTING
+batch/inventory row rather than creating new products or batches from
+scratch, and they lean on the schema's own fn_atomic_update_inventory
+stored procedure for the row-locked, version-checked balance update and
+its audit trail (mottainai.inventory_movement) instead of reimplementing
+that logic in Python.
 
 Note: SQL-computed status strings ('RUPTURA', 'ABAIXO_MINIMO', 'EXCESSO',
 etc.) and the dict keys returned by get_shelf_inventory_crosscheck
@@ -114,12 +122,20 @@ async def get_stock_alerts(
     return await _exec(sql, empresa_id=empresa_id, params=params)
 
 
-async def get_expiring_batches(empresa_id: int, days_ahead: int = 7) -> list[dict]:
+async def get_expiring_batches(
+    empresa_id: int,
+    days_ahead: int = 7,
+    store_id: int | None = None,
+) -> list[dict]:
     """
     Returns batches with an upcoming expiration date.
     Used by the Predictive Engine for loss risk detection.
     """
-    sql = """
+    if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
+        raise ValueError("store_id must be a positive integer.")
+
+    store_filter = "AND rs.store_id = :store_id" if store_id is not None else ""
+    sql = f"""
         SELECT
             b.batch_id,
             b.batch_code,
@@ -147,6 +163,7 @@ async def get_expiring_batches(empresa_id: int, days_ahead: int = 7) -> list[dic
           AND rs.deleted_at IS NULL
           AND c.active = TRUE
           AND c.deleted_at IS NULL
+          {store_filter}
         GROUP BY
             b.batch_id,
             b.batch_code,
@@ -158,19 +175,26 @@ async def get_expiring_batches(empresa_id: int, days_ahead: int = 7) -> list[dic
         ORDER BY b.expiration_date ASC
         LIMIT 20
     """
-    return await _exec(
-        sql,
-        empresa_id=empresa_id,
-        params={"days_ahead": days_ahead},
-    )
+    params: dict[str, Any] = {"days_ahead": days_ahead}
+    if store_id is not None:
+        params["store_id"] = store_id
+    return await _exec(sql, empresa_id=empresa_id, params=params)
 
 
-async def get_sales_summary(empresa_id: int, days_back: int = 30) -> list[dict]:
+async def get_sales_summary(
+    empresa_id: int,
+    days_back: int = 30,
+    store_id: int | None = None,
+) -> list[dict]:
     """
     Returns a per-product sales summary for the last `days_back` days.
     Used by the Predictive Engine for demand forecasting.
     """
-    sql = """
+    if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
+        raise ValueError("store_id must be a positive integer.")
+
+    store_filter = "AND rs.store_id = :store_id" if store_id is not None else ""
+    sql = f"""
         SELECT
             p.product_id,
             p.name        AS product_name,
@@ -193,17 +217,22 @@ async def get_sales_summary(empresa_id: int, days_back: int = 30) -> list[dict]:
           AND rs.deleted_at IS NULL
           AND c.active = TRUE
           AND c.deleted_at IS NULL
+          {store_filter}
         GROUP BY p.product_id, p.name, p.barcode
         ORDER BY total_sold DESC
         LIMIT 20
     """
-    return await _exec(sql, empresa_id=empresa_id, params={"days_back": days_back})
+    params: dict[str, Any] = {"days_back": days_back}
+    if store_id is not None:
+        params["store_id"] = store_id
+    return await _exec(sql, empresa_id=empresa_id, params=params)
 
 
 async def get_daily_sales_series(
     empresa_id: int,
     product_ids: list[int],
     days_back: int = 28,
+    store_id: int | None = None,
 ) -> list[dict]:
     """
     Per-product, per-day sold quantity for the given products over the last
@@ -213,8 +242,11 @@ async def get_daily_sales_series(
     """
     if not product_ids:
         return []
+    if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
+        raise ValueError("store_id must be a positive integer.")
 
-    sql = """
+    store_filter = "AND rs.store_id = :store_id" if store_id is not None else ""
+    sql = f"""
         SELECT
             p.product_id,
             st.sale_date,
@@ -235,14 +267,14 @@ async def get_daily_sales_series(
           AND rs.deleted_at IS NULL
           AND c.active = TRUE
           AND c.deleted_at IS NULL
+          {store_filter}
         GROUP BY p.product_id, st.sale_date
         ORDER BY p.product_id, st.sale_date
     """
-    return await _exec(
-        sql,
-        empresa_id=empresa_id,
-        params={"days_back": days_back, "product_ids": product_ids},
-    )
+    params: dict[str, Any] = {"days_back": days_back, "product_ids": product_ids}
+    if store_id is not None:
+        params["store_id"] = store_id
+    return await _exec(sql, empresa_id=empresa_id, params=params)
 
 
 async def get_kpis(empresa_id: int) -> dict:
@@ -552,4 +584,184 @@ async def get_shelf_inventory_crosscheck(
         "encontrados": found,
         "ausentes_esperados": missing,
         "alertas_ativos": await get_stock_alerts(empresa_id, limit=10, store_id=store_id),
+    }
+
+
+def _validate_positive_int(value: Any, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{field_name} must be a positive integer.")
+
+
+async def _find_inventory_id(
+    session,
+    *,
+    empresa_id: int,
+    store_id: int,
+    batch_id: int,
+) -> int:
+    """Resolves (store_id, batch_id) to an inventory_id, scoped to the tenant."""
+    row = (
+        await session.execute(
+            text("""
+                SELECT i.inventory_id
+                FROM mottainai.inventory i
+                JOIN mottainai.retail_store rs ON rs.store_id = i.store_id
+                JOIN mottainai.company c ON c.company_id = rs.company_id
+                WHERE i.batch_id = :batch_id
+                  AND i.store_id = :store_id
+                  AND c.company_id = :empresa_id
+                  AND i.deleted_at IS NULL
+                  AND rs.active = TRUE
+                  AND rs.deleted_at IS NULL
+                  AND c.active = TRUE
+                  AND c.deleted_at IS NULL
+            """),
+            {"batch_id": batch_id, "store_id": store_id, "empresa_id": empresa_id},
+        )
+    ).mappings().first()
+
+    if row is None:
+        raise ValueError(
+            f"No inventory record for batch_id={batch_id} at store_id={store_id} in this company."
+        )
+    return row["inventory_id"]
+
+
+async def discard_batch(
+    empresa_id: int,
+    store_id: int,
+    batch_id: int,
+    employee_id: int,
+    quantity: Decimal,
+    reason: str,
+    observation: str | None = None,
+) -> dict:
+    """
+    Registers a batch disposal (descarte): creates the disposal + disposal_item
+    audit rows and atomically decrements the matching inventory row via the
+    schema's fn_atomic_update_inventory (row-locked, optimistic-version-checked,
+    writes its own inventory_movement row). Used by the Employee Agent.
+    """
+    _validate_positive_int(store_id, "store_id")
+    _validate_positive_int(batch_id, "batch_id")
+    _validate_positive_int(employee_id, "employee_id")
+    if not reason or not reason.strip():
+        raise ValueError("reason is required.")
+    quantity = Decimal(str(quantity))
+    if quantity <= 0:
+        raise ValueError("quantity must be greater than zero.")
+
+    async with get_pg_session() as session:
+        await session.execute(
+            text("SELECT set_config('app.current_company_id', CAST(:empresa_id AS TEXT), true)"),
+            {"empresa_id": str(empresa_id)},
+        )
+
+        inventory_id = await _find_inventory_id(
+            session, empresa_id=empresa_id, store_id=store_id, batch_id=batch_id
+        )
+
+        disposal_row = (
+            await session.execute(
+                text("""
+                    INSERT INTO mottainai.disposal (store_id, employee_id, reason, observation)
+                    VALUES (:store_id, :employee_id, :reason, :observation)
+                    RETURNING disposal_id
+                """),
+                {
+                    "store_id": store_id,
+                    "employee_id": employee_id,
+                    "reason": reason.strip(),
+                    "observation": observation,
+                },
+            )
+        ).mappings().first()
+        disposal_id = disposal_row["disposal_id"]
+
+        await session.execute(
+            text("""
+                INSERT INTO mottainai.disposal_item (disposal_id, batch_id, disposed_quantity)
+                VALUES (:disposal_id, :batch_id, :quantity)
+            """),
+            {"disposal_id": disposal_id, "batch_id": batch_id, "quantity": quantity},
+        )
+
+        balance_row = (
+            await session.execute(
+                text("""
+                    SELECT mottainai.fn_atomic_update_inventory(
+                        :inventory_id, :delta, 'DISPOSAL', :employee_id, :observation
+                    ) AS new_balance
+                """),
+                {
+                    "inventory_id": inventory_id,
+                    "delta": -quantity,
+                    "employee_id": employee_id,
+                    "observation": observation or reason.strip(),
+                },
+            )
+        ).mappings().first()
+
+    return {
+        "disposal_id": disposal_id,
+        "batch_id": batch_id,
+        "store_id": store_id,
+        "disposed_quantity": quantity,
+        "new_inventory_balance": balance_row["new_balance"],
+    }
+
+
+async def receive_inventory(
+    empresa_id: int,
+    store_id: int,
+    batch_id: int,
+    employee_id: int,
+    quantity: Decimal,
+    observation: str | None = None,
+) -> dict:
+    """
+    Registers receipt of goods for an EXISTING batch already tracked in
+    inventory at that store (e.g. confirming a restock). Does not create new
+    products or batches — that's a separate, bigger feature (purchase-order
+    management) intentionally left out of scope here. Used by the Employee
+    Agent.
+    """
+    _validate_positive_int(store_id, "store_id")
+    _validate_positive_int(batch_id, "batch_id")
+    _validate_positive_int(employee_id, "employee_id")
+    quantity = Decimal(str(quantity))
+    if quantity <= 0:
+        raise ValueError("quantity must be greater than zero.")
+
+    async with get_pg_session() as session:
+        await session.execute(
+            text("SELECT set_config('app.current_company_id', CAST(:empresa_id AS TEXT), true)"),
+            {"empresa_id": str(empresa_id)},
+        )
+
+        inventory_id = await _find_inventory_id(
+            session, empresa_id=empresa_id, store_id=store_id, batch_id=batch_id
+        )
+
+        balance_row = (
+            await session.execute(
+                text("""
+                    SELECT mottainai.fn_atomic_update_inventory(
+                        :inventory_id, :delta, 'IN', :employee_id, :observation
+                    ) AS new_balance
+                """),
+                {
+                    "inventory_id": inventory_id,
+                    "delta": quantity,
+                    "employee_id": employee_id,
+                    "observation": observation,
+                },
+            )
+        ).mappings().first()
+
+    return {
+        "batch_id": batch_id,
+        "store_id": store_id,
+        "received_quantity": quantity,
+        "new_inventory_balance": balance_row["new_balance"],
     }

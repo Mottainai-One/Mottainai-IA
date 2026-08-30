@@ -2,6 +2,7 @@
 import io
 import json
 import unittest
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -22,11 +23,15 @@ from interfaces.api.main import (
     app,
     chat,
     ChatRequest,
+    descartar_lote,
+    DescartarLoteRequest,
     health_check,
     live_check,
     logout,
     readiness_check,
     RagDocumentUploadRequest,
+    receber_mercadoria,
+    ReceberMercadoriaRequest,
     trigger_motor_preditivo,
     unhandled_exception_handler,
     upload_rag_document,
@@ -162,6 +167,54 @@ class RagDocumentUploadRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.exception.status_code, 422)
 
 
+class EmployeeWriteRoutesTests(unittest.IsolatedAsyncioTestCase):
+    async def test_descartar_lote_calls_the_tool_with_the_authenticated_employee(self):
+        tool = AsyncMock(return_value={"disposal_id": 1, "new_inventory_balance": Decimal("2")})
+        body = DescartarLoteRequest(store_id=1, batch_id=7, quantity=Decimal("3"), reason="vencido")
+
+        with patch("app.tools.postgres_tools.discard_batch", new=tool):
+            result = await descartar_lote(body, AuthContext(usuario_id=9, empresa_id=42, role="ESTOQUISTA"))
+
+        tool.assert_awaited_once_with(
+            empresa_id=42, store_id=1, batch_id=7, employee_id=9,
+            quantity=Decimal("3"), reason="vencido", observation=None,
+        )
+        self.assertEqual(result["disposal_id"], 1)
+
+    async def test_descartar_lote_returns_404_when_inventory_not_found(self):
+        with patch("app.tools.postgres_tools.discard_batch", new=AsyncMock(side_effect=ValueError("não encontrado"))):
+            with self.assertRaises(HTTPException) as context:
+                await descartar_lote(
+                    DescartarLoteRequest(store_id=1, batch_id=7, quantity=Decimal("3"), reason="vencido"),
+                    AuthContext(usuario_id=9, empresa_id=42, role="ESTOQUISTA"),
+                )
+
+        self.assertEqual(context.exception.status_code, 404)
+
+    async def test_receber_mercadoria_calls_the_tool_with_the_authenticated_employee(self):
+        tool = AsyncMock(return_value={"new_inventory_balance": Decimal("50")})
+        body = ReceberMercadoriaRequest(store_id=1, batch_id=7, quantity=Decimal("20"))
+
+        with patch("app.tools.postgres_tools.receive_inventory", new=tool):
+            result = await receber_mercadoria(body, AuthContext(usuario_id=9, empresa_id=42, role="GERENTE"))
+
+        tool.assert_awaited_once_with(
+            empresa_id=42, store_id=1, batch_id=7, employee_id=9,
+            quantity=Decimal("20"), observation=None,
+        )
+        self.assertEqual(result["new_inventory_balance"], Decimal("50"))
+
+    async def test_receber_mercadoria_returns_404_when_inventory_not_found(self):
+        with patch("app.tools.postgres_tools.receive_inventory", new=AsyncMock(side_effect=ValueError("não encontrado"))):
+            with self.assertRaises(HTTPException) as context:
+                await receber_mercadoria(
+                    ReceberMercadoriaRequest(store_id=1, batch_id=7, quantity=Decimal("20")),
+                    AuthContext(usuario_id=9, empresa_id=42, role="GERENTE"),
+                )
+
+        self.assertEqual(context.exception.status_code, 404)
+
+
 class LogoutRouteTests(unittest.IsolatedAsyncioTestCase):
     async def test_revokes_the_callers_own_token(self):
         principal = AuthContext(usuario_id=7, empresa_id=42, role="DONO", jti="tok-1", exp=9999999999)
@@ -212,6 +265,37 @@ class ProtectedOperationalRoutesTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["analysis"], "resposta filtrada")
         guardrail.assert_awaited_once_with(judged)
+
+    async def test_predictive_trigger_scopes_state_to_the_requested_store(self):
+        generated = {"agent_response": "resposta bruta", "judge_score": 0.9, "sources": []}
+        node = AsyncMock(return_value=generated)
+
+        with (
+            patch("app.agents.motor_preditivo.node_motor_preditivo", new=node),
+            patch("app.agents.juiz.node_agente_juiz", new=AsyncMock(return_value=generated)),
+            patch("interfaces.api.main.node_guardrail_saida", new=AsyncMock(return_value={**generated, "final_response": "ok"})),
+        ):
+            await trigger_motor_preditivo(
+                AuthContext(usuario_id=7, empresa_id=42, role="DONO"),
+                store_id=99,
+            )
+
+        state_passed = node.await_args.args[0]
+        self.assertEqual(state_passed["store_id"], 99)
+
+    async def test_predictive_trigger_defaults_to_company_wide_scope(self):
+        generated = {"agent_response": "resposta bruta", "judge_score": 0.9, "sources": []}
+        node = AsyncMock(return_value=generated)
+
+        with (
+            patch("app.agents.motor_preditivo.node_motor_preditivo", new=node),
+            patch("app.agents.juiz.node_agente_juiz", new=AsyncMock(return_value=generated)),
+            patch("interfaces.api.main.node_guardrail_saida", new=AsyncMock(return_value={**generated, "final_response": "ok"})),
+        ):
+            await trigger_motor_preditivo(AuthContext(usuario_id=7, empresa_id=42, role="DONO"))
+
+        state_passed = node.await_args.args[0]
+        self.assertIsNone(state_passed["store_id"])
 
     async def test_predictive_trigger_sanitizes_provider_failure(self):
         error = APIConnectionError(request=httpx.Request("POST", "https://api.groq.com"))
