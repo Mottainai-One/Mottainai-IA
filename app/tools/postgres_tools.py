@@ -6,21 +6,48 @@ etc.) and the dict keys returned by get_shelf_inventory_crosscheck
 consumed by other code and by the agents' LLM prompts — they are kept in
 Portuguese, not translated as part of this pass.
 """
+import logging
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 
 from app.database.postgres import get_pg_session
+from config.settings import get_settings
+
+settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
+@retry(
+    stop=stop_after_attempt(settings.postgres_max_retries),
+    wait=wait_exponential_jitter(),
+    retry=retry_if_exception_type(OperationalError),
+    reraise=True,
+    before_sleep=lambda retry_state: logger.warning(
+        "Postgres query failed (attempt %s/%s), retrying: %s",
+        retry_state.attempt_number, settings.postgres_max_retries, retry_state.outcome.exception(),
+    ),
+)
 async def _exec(
     sql: str,
     *,
     empresa_id: int,
     params: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Executes a query scoped to the authenticated tenant."""
+    """
+    Executes a query scoped to the authenticated tenant.
+
+    Retries on OperationalError (SQLAlchemy's category for a transient
+    connection failure — dropped connection, connection refused, timeout)
+    with exponential backoff + jitter, same pattern already used for LLM
+    provider calls (app/agents/runtime.get_llm). Every query here is a
+    read, so retrying is always safe — nothing here can double-apply a
+    side effect. Does NOT retry on query errors (bad SQL, a constraint
+    violation surfaced through a stored function) — those aren't transient.
+    """
     if isinstance(empresa_id, bool) or empresa_id < 1:
         raise ValueError("empresa_id must be a positive integer.")
 
@@ -188,6 +215,55 @@ async def get_sales_summary(
         LIMIT 20
     """
     params: dict[str, Any] = {"days_back": days_back}
+    if store_id is not None:
+        params["store_id"] = store_id
+    return await _exec(sql, empresa_id=empresa_id, params=params)
+
+
+async def get_daily_sales_series(
+    empresa_id: int,
+    product_ids: list[int],
+    days_back: int = 28,
+    store_id: int | None = None,
+) -> list[dict]:
+    """
+    Per-product, per-day sold quantity for the given products over the last
+    `days_back` days. Used by the Predictive Engine to compute a real
+    moving-average/trend demand forecast (as opposed to guessing from a raw
+    aggregate dump).
+    """
+    if not product_ids:
+        return []
+    if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
+        raise ValueError("store_id must be a positive integer.")
+
+    store_filter = "AND rs.store_id = :store_id" if store_id is not None else ""
+    sql = f"""
+        SELECT
+            p.product_id,
+            st.sale_date,
+            SUM(si.quantity_sold) AS quantity_sold
+        FROM mottainai.sales_transaction st
+        JOIN mottainai.sale_item si ON si.sale_id = st.sale_id AND si.sale_date = st.sale_date
+        JOIN mottainai.product p ON p.product_id = si.product_id
+        JOIN mottainai.retail_store rs ON rs.store_id = st.store_id
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        WHERE c.company_id = :empresa_id
+          AND st.sale_date >= (CURRENT_DATE - CAST(:days_back AS INTEGER))
+          AND st.status = 'COMPLETED'
+          AND st.deleted_at IS NULL
+          AND p.product_id = ANY(:product_ids)
+          AND p.active = TRUE
+          AND p.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+          {store_filter}
+        GROUP BY p.product_id, st.sale_date
+        ORDER BY p.product_id, st.sale_date
+    """
+    params: dict[str, Any] = {"days_back": days_back, "product_ids": product_ids}
     if store_id is not None:
         params["store_id"] = store_id
     return await _exec(sql, empresa_id=empresa_id, params=params)
