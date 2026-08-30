@@ -21,3 +21,7 @@ def notification(empresa_id: int, usuario_id: int, notification_id: str) -> str:
 
 def rag_result(empresa_id: int, query_hash: str) -> str:
     return f"{PREFIX}:rag:{empresa_id}:{query_hash}"
+
+
+def revoked_token(jti: str) -> str:
+    return f"{PREFIX}:auth:revoked:{jti}"
