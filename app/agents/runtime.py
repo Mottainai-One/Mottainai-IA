@@ -1,7 +1,7 @@
 """Dependencies shared by the agents, without assembling the graph."""
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 import httpx
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -22,6 +22,7 @@ class MottainaiState(TypedDict):
     session_id: str
     empresa_id: int
     usuario_id: int
+    store_id: NotRequired[int | None]  # scopes the Predictive Engine to one store
     user_role: str
     user_input: str
     sanitized_input: str

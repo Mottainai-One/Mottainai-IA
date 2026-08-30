@@ -108,8 +108,40 @@ class PostgresSchemaContracts(unittest.IsolatedAsyncioTestCase):
         self.assertIn("st.deleted_at IS NULL", sql)
         self.assertIn("p.barcode     AS barcode", sql)
         self.assertNotIn("p.sku", sql)
+        self.assertNotIn("AND rs.store_id = :store_id", sql)
         self.assertEqual(execute.await_args.kwargs["empresa_id"], 42)
         self.assertEqual(execute.await_args.kwargs["params"]["days_back"], 60)
+        self.assertNotIn("store_id", execute.await_args.kwargs["params"])
+
+    async def test_sales_summary_binds_optional_store_filter(self):
+        with patch(
+            "app.tools.postgres_tools._exec",
+            new=AsyncMock(return_value=[]),
+        ) as execute:
+            await postgres_tools.get_sales_summary(42, days_back=60, store_id=7)
+
+        sql = execute.await_args.args[0]
+        self.assertIn("AND rs.store_id = :store_id", sql)
+        self.assertEqual(execute.await_args.kwargs["params"]["store_id"], 7)
+
+    async def test_sales_summary_rejects_invalid_store_id(self):
+        with self.assertRaises(ValueError):
+            await postgres_tools.get_sales_summary(42, store_id=0)
+
+    async def test_expiring_batches_binds_optional_store_filter(self):
+        with patch(
+            "app.tools.postgres_tools._exec",
+            new=AsyncMock(return_value=[]),
+        ) as execute:
+            await postgres_tools.get_expiring_batches(42, days_ahead=14, store_id=7)
+
+        sql = execute.await_args.args[0]
+        self.assertIn("AND rs.store_id = :store_id", sql)
+        self.assertEqual(execute.await_args.kwargs["params"]["store_id"], 7)
+
+    async def test_expiring_batches_rejects_invalid_store_id(self):
+        with self.assertRaises(ValueError):
+            await postgres_tools.get_expiring_batches(42, store_id=-1)
 
     async def test_daily_sales_series_binds_product_ids_and_skips_query_when_empty(self):
         with patch(
@@ -129,6 +161,21 @@ class PostgresSchemaContracts(unittest.IsolatedAsyncioTestCase):
             execute.await_args.kwargs["params"],
             {"days_back": 28, "product_ids": [10, 20]},
         )
+
+    async def test_daily_sales_series_binds_optional_store_filter(self):
+        with patch(
+            "app.tools.postgres_tools._exec",
+            new=AsyncMock(return_value=[]),
+        ) as execute:
+            await postgres_tools.get_daily_sales_series(42, [10], days_back=28, store_id=7)
+
+        sql = execute.await_args.args[0]
+        self.assertIn("AND rs.store_id = :store_id", sql)
+        self.assertEqual(execute.await_args.kwargs["params"]["store_id"], 7)
+
+    async def test_daily_sales_series_rejects_invalid_store_id(self):
+        with self.assertRaises(ValueError):
+            await postgres_tools.get_daily_sales_series(42, [10], store_id=0)
 
     async def test_inventory_query_keeps_store_filter_bound(self):
         with patch(
