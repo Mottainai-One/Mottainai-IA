@@ -11,4 +11,6 @@ dist/
 build/
 .pytest_cache/
 .run/
+.coverage
+htmlcov/
 
