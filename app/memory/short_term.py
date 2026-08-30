@@ -55,6 +55,34 @@ async def load_history(session_id: str, limit: int = 20) -> list[BaseMessage]:
     return messages
 
 
+async def get_recent_vision_analyses(session_id: str, limit: int = 3) -> list[dict]:
+    """
+    Compact summary of the most recent shelf-photo analyses
+    (POST /shelf/analyze, app/agents/visao.py) taken during this session,
+    newest first. Lets the Employee Agent's chat responses reference a
+    photo the user just took without re-describing the whole raw
+    vision_result blob (produtos_detectados, cruzamento_inventario, etc.)
+    back into every prompt.
+    """
+    db = get_mongo_db()
+    cursor = db.ai_results.find(
+        {"sessionId": session_id, "agent": "visao"},
+        sort=[("createdAt", -1)],
+    ).limit(limit)
+
+    summaries = []
+    async for doc in cursor:
+        result = doc.get("result", {})
+        summaries.append({
+            "quando": doc.get("createdAt"),
+            "estado_geral": result.get("estado_geral"),
+            "ocupacao_pct": result.get("ocupacao_pct"),
+            "produtos_detectados": len(result.get("produtos_detectados") or []),
+            "acoes_sugeridas": result.get("acoes_sugeridas", []),
+        })
+    return summaries
+
+
 async def save_message(
     session_id: str,
     role: str,
