@@ -210,6 +210,11 @@ jobs:
           echo "$COMMITS" | while read -r line; do
             [ -z "$line" ] && continue
             COMMIT_MSG=$(echo "$line" | cut -d' ' -f2-)
+            # Merge commits (e.g. from syncing a branch with main) don't carry
+            # a conventional-commit type of their own and are exempt.
+            if echo "$COMMIT_MSG" | grep -qE "^Merge "; then
+              continue
+            fi
             if ! echo "$COMMIT_MSG" | grep -qE "$PATTERN"; then
               echo "ERRO: Commit nao segue a convencao: $COMMIT_MSG"
               echo "Padrao esperado: feat|fix|docs|style|refactor|test|chore|ci: mensagem"
