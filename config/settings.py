@@ -77,6 +77,12 @@ class Settings(BaseSettings):
     # (timeout, rate limit, 5xx error) with exponential backoff + jitter.
     llm_max_retries: int = 3
 
+    # Same idea for Postgres: retries on a transient connection failure
+    # (SQLAlchemy OperationalError) with exponential backoff + jitter.
+    # Does NOT retry query errors (bad SQL, constraint violations) — those
+    # aren't transient and retrying them would just waste time.
+    postgres_max_retries: int = 3
+
     # RAG results cache in Redis — avoids recomputing embeddings/similarity
     # for the same question within the same company. Purely a latency
     # optimization: if Redis is unavailable, RAG keeps working without

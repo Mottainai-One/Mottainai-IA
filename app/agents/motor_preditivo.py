@@ -20,21 +20,27 @@ import json
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.runtime import MottainaiState, get_llm
+from app.analytics.forecasting import build_daily_series, forecast_product_demand
 from app.notifications.alert_webhook import notify_new_critical_alerts
 from app.rag.external_source import get_weather_forecast, interpret_weather_for_demand
 from app.tools.mcp_tools import mcp_call_weather_agent
-from app.tools.postgres_tools import get_expiring_batches, get_sales_summary, get_stock_alerts
+from app.tools.postgres_tools import (
+    get_daily_sales_series,
+    get_expiring_batches,
+    get_sales_summary,
+    get_stock_alerts,
+)
 
 SYSTEM_PROMPT = """Você é o Motor Preditivo do Mottainai — sistema autônomo de gestão inteligente de estoque.
 
 Suas responsabilidades:
-1. PREVISÃO DE DEMANDA: Com base no histórico de vendas (PostgreSQL) e previsão climática (Open-Meteo), estime a demanda para os próximos 7 dias por categoria de produto.
+1. PREVISÃO DE DEMANDA: Um cálculo de média móvel ponderada com tendência (feito em Python, não por você) já estima a demanda dos próximos 7 dias por produto. Sua função é EXPLICAR esses números — não recalculá-los nem inventar novos.
 2. DETECÇÃO DE RISCO DE PERDA: Identifique lotes com alto risco de vencimento cruzando validade × giro histórico. Priorize por severidade (dias restantes × quantidade).
 3. AÇÃO SUGERIDA: Para cada risco identificado, recomende: promoção relâmpago, transferência entre lojas, doação ou descarte. Justifique a escolha.
-4. PRÉ-LISTA DE ABASTECIMENTO: Com base na demanda prevista e estoque atual, gere sugestão de reposição.
+4. PRÉ-LISTA DE ABASTECIMENTO: Com base na previsão de demanda calculada e no estoque atual, gere sugestão de reposição.
 
 Formato de saída: JSON estruturado + resumo executivo em português.
-NUNCA invente dados. Use APENAS os dados fornecidos no contexto.
+NUNCA invente dados. Use APENAS os dados fornecidos no contexto, incluindo a previsão de demanda já calculada.
 """
 
 
@@ -55,6 +61,22 @@ async def node_motor_preditivo(state: MottainaiState) -> MottainaiState:
     # a notification failure must not break the analysis below.
     await notify_new_critical_alerts(empresa_id, alerts)
 
+    # 1c. Real demand forecast (moving average + trend, computed in Python —
+    # see app/analytics/forecasting.py) for the top products by volume.
+    top_products = sales[:8]
+    demand_forecast: list[dict] = []
+    if top_products:
+        product_ids = [p["product_id"] for p in top_products]
+        daily_rows = await get_daily_sales_series(empresa_id, product_ids, days_back=28)
+        for product in top_products:
+            series = build_daily_series(daily_rows, product["product_id"], days_back=28)
+            forecast = forecast_product_demand(series)
+            demand_forecast.append({
+                "product_id": product["product_id"],
+                "product_name": product["product_name"],
+                **forecast,
+            })
+
     # 2. External source — Open-Meteo via MCP (A2A)
     try:
         weather_raw = await mcp_call_weather_agent(
@@ -73,10 +95,13 @@ Dados climáticos atuais (fonte: Open-Meteo via MCP — {forecast['source']}):
 
     # 3. Full context for the LLM (kept in Portuguese, see module docstring)
     context = f"""
+PREVISÃO DE DEMANDA CALCULADA (média móvel ponderada com tendência, próximos 7 dias, já pronta — apenas explique):
+{json.dumps(demand_forecast, default=str, ensure_ascii=False, indent=2)}
+
 LOTES COM RISCO DE VENCIMENTO (próximos 14 dias):
 {json.dumps(expiring, default=str, ensure_ascii=False, indent=2)}
 
-HISTÓRICO DE VENDAS (últimos 60 dias):
+HISTÓRICO DE VENDAS (últimos 60 dias, para contexto adicional):
 {json.dumps(sales[:15], default=str, ensure_ascii=False, indent=2)}
 
 ALERTAS ATIVOS:
@@ -101,6 +126,7 @@ ALERTAS ATIVOS:
         "agent_response": content,
         "sources": [
             {"type": "sql", "ref": "mottainai.batch + sales_transaction + alert", "score": None},
+            {"type": "calc", "ref": "app.analytics.forecasting (média móvel ponderada com tendência)", "score": None},
             {"type": "api", "ref": "Open-Meteo (open-meteo.com) — CC BY 4.0", "score": None},
         ],
         "input_tokens": usage.get("input_tokens", 0),

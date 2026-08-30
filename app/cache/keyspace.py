@@ -25,3 +25,7 @@ def rag_result(empresa_id: int, query_hash: str) -> str:
 
 def notified_alert(empresa_id: int, alert_id: str) -> str:
     return f"{PREFIX}:alert-webhook-sent:{empresa_id}:{alert_id}"
+
+
+def revoked_token(jti: str) -> str:
+    return f"{PREFIX}:auth:revoked:{jti}"
