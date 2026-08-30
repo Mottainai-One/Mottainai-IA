@@ -100,7 +100,7 @@ NOTIFICAÇÕES:
     usage = response.usage_metadata or {}
     extra_sources = [{"type": "sql", "ref": "mottainai.alert + inventory + batch", "score": None}]
     if vision_analyses:
-        extra_sources.append({"type": "vision", "ref": "app.agents.visao (ai_results)", "score": None})
+        extra_sources.append({"type": "other", "ref": "app.agents.visao (ai_results)", "score": None})
 
     return {
         **state,
