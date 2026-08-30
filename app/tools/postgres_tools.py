@@ -114,12 +114,20 @@ async def get_stock_alerts(
     return await _exec(sql, empresa_id=empresa_id, params=params)
 
 
-async def get_expiring_batches(empresa_id: int, days_ahead: int = 7) -> list[dict]:
+async def get_expiring_batches(
+    empresa_id: int,
+    days_ahead: int = 7,
+    store_id: int | None = None,
+) -> list[dict]:
     """
     Returns batches with an upcoming expiration date.
     Used by the Predictive Engine for loss risk detection.
     """
-    sql = """
+    if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
+        raise ValueError("store_id must be a positive integer.")
+
+    store_filter = "AND rs.store_id = :store_id" if store_id is not None else ""
+    sql = f"""
         SELECT
             b.batch_id,
             b.batch_code,
@@ -147,6 +155,7 @@ async def get_expiring_batches(empresa_id: int, days_ahead: int = 7) -> list[dic
           AND rs.deleted_at IS NULL
           AND c.active = TRUE
           AND c.deleted_at IS NULL
+          {store_filter}
         GROUP BY
             b.batch_id,
             b.batch_code,
@@ -158,19 +167,26 @@ async def get_expiring_batches(empresa_id: int, days_ahead: int = 7) -> list[dic
         ORDER BY b.expiration_date ASC
         LIMIT 20
     """
-    return await _exec(
-        sql,
-        empresa_id=empresa_id,
-        params={"days_ahead": days_ahead},
-    )
+    params: dict[str, Any] = {"days_ahead": days_ahead}
+    if store_id is not None:
+        params["store_id"] = store_id
+    return await _exec(sql, empresa_id=empresa_id, params=params)
 
 
-async def get_sales_summary(empresa_id: int, days_back: int = 30) -> list[dict]:
+async def get_sales_summary(
+    empresa_id: int,
+    days_back: int = 30,
+    store_id: int | None = None,
+) -> list[dict]:
     """
     Returns a per-product sales summary for the last `days_back` days.
     Used by the Predictive Engine for demand forecasting.
     """
-    sql = """
+    if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
+        raise ValueError("store_id must be a positive integer.")
+
+    store_filter = "AND rs.store_id = :store_id" if store_id is not None else ""
+    sql = f"""
         SELECT
             p.product_id,
             p.name        AS product_name,
@@ -193,17 +209,22 @@ async def get_sales_summary(empresa_id: int, days_back: int = 30) -> list[dict]:
           AND rs.deleted_at IS NULL
           AND c.active = TRUE
           AND c.deleted_at IS NULL
+          {store_filter}
         GROUP BY p.product_id, p.name, p.barcode
         ORDER BY total_sold DESC
         LIMIT 20
     """
-    return await _exec(sql, empresa_id=empresa_id, params={"days_back": days_back})
+    params: dict[str, Any] = {"days_back": days_back}
+    if store_id is not None:
+        params["store_id"] = store_id
+    return await _exec(sql, empresa_id=empresa_id, params=params)
 
 
 async def get_daily_sales_series(
     empresa_id: int,
     product_ids: list[int],
     days_back: int = 28,
+    store_id: int | None = None,
 ) -> list[dict]:
     """
     Per-product, per-day sold quantity for the given products over the last
@@ -213,8 +234,11 @@ async def get_daily_sales_series(
     """
     if not product_ids:
         return []
+    if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
+        raise ValueError("store_id must be a positive integer.")
 
-    sql = """
+    store_filter = "AND rs.store_id = :store_id" if store_id is not None else ""
+    sql = f"""
         SELECT
             p.product_id,
             st.sale_date,
@@ -235,14 +259,14 @@ async def get_daily_sales_series(
           AND rs.deleted_at IS NULL
           AND c.active = TRUE
           AND c.deleted_at IS NULL
+          {store_filter}
         GROUP BY p.product_id, st.sale_date
         ORDER BY p.product_id, st.sale_date
     """
-    return await _exec(
-        sql,
-        empresa_id=empresa_id,
-        params={"days_back": days_back, "product_ids": product_ids},
-    )
+    params: dict[str, Any] = {"days_back": days_back, "product_ids": product_ids}
+    if store_id is not None:
+        params["store_id"] = store_id
+    return await _exec(sql, empresa_id=empresa_id, params=params)
 
 
 async def get_kpis(empresa_id: int) -> dict:

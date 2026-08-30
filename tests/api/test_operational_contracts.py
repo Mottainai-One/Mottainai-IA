@@ -179,6 +179,37 @@ class ProtectedOperationalRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["analysis"], "resposta filtrada")
         guardrail.assert_awaited_once_with(judged)
 
+    async def test_predictive_trigger_scopes_state_to_the_requested_store(self):
+        generated = {"agent_response": "resposta bruta", "judge_score": 0.9, "sources": []}
+        node = AsyncMock(return_value=generated)
+
+        with (
+            patch("app.agents.motor_preditivo.node_motor_preditivo", new=node),
+            patch("app.agents.juiz.node_agente_juiz", new=AsyncMock(return_value=generated)),
+            patch("interfaces.api.main.node_guardrail_saida", new=AsyncMock(return_value={**generated, "final_response": "ok"})),
+        ):
+            await trigger_motor_preditivo(
+                AuthContext(usuario_id=7, empresa_id=42, role="DONO"),
+                store_id=99,
+            )
+
+        state_passed = node.await_args.args[0]
+        self.assertEqual(state_passed["store_id"], 99)
+
+    async def test_predictive_trigger_defaults_to_company_wide_scope(self):
+        generated = {"agent_response": "resposta bruta", "judge_score": 0.9, "sources": []}
+        node = AsyncMock(return_value=generated)
+
+        with (
+            patch("app.agents.motor_preditivo.node_motor_preditivo", new=node),
+            patch("app.agents.juiz.node_agente_juiz", new=AsyncMock(return_value=generated)),
+            patch("interfaces.api.main.node_guardrail_saida", new=AsyncMock(return_value={**generated, "final_response": "ok"})),
+        ):
+            await trigger_motor_preditivo(AuthContext(usuario_id=7, empresa_id=42, role="DONO"))
+
+        state_passed = node.await_args.args[0]
+        self.assertIsNone(state_passed["store_id"])
+
     async def test_predictive_trigger_sanitizes_provider_failure(self):
         error = APIConnectionError(request=httpx.Request("POST", "https://api.groq.com"))
         with patch("app.agents.motor_preditivo.node_motor_preditivo", new=AsyncMock(side_effect=error)):

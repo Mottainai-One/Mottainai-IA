@@ -30,6 +30,7 @@ from fastapi import (
     File,
     Header,
     HTTPException,
+    Query,
     Request,
     UploadFile,
     status,
@@ -464,12 +465,20 @@ async def close_chat_session(session_id: str, principal: Annotated[AuthContext, 
 
 
 @app.post("/motor-preditivo/trigger", tags=["Motor Preditivo"])
-async def trigger_motor_preditivo(principal: Annotated[AuthContext, Depends(require_roles("DONO"))]):
-    """Triggers the predictive engine for the authenticated owner's company."""
+async def trigger_motor_preditivo(
+    principal: Annotated[AuthContext, Depends(require_roles("DONO"))],
+    store_id: Annotated[int | None, Query(gt=0)] = None,
+):
+    """
+    Triggers the predictive engine for the authenticated owner's company.
+    Pass store_id to scope the analysis to a single store instead of the
+    whole company.
+    """
     state: MottainaiState = {
         "session_id": f"motor-{principal.empresa_id}-{int(time.time())}",
         "empresa_id": principal.empresa_id,
         "usuario_id": principal.usuario_id,
+        "store_id": store_id,
         "user_role": principal.role,
         "user_input": "trigger automático",
         "sanitized_input": "trigger automático",
