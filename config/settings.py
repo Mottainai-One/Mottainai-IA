@@ -96,6 +96,13 @@ class Settings(BaseSettings):
     a2a_empresa_id: int = 0
     public_base_url: str = "http://localhost:8000"
 
+    # Outbound webhook for CRITICAL alerts (push, unlike the Redis inbox in
+    # app/cache/notifications.py, which is pull — read only when someone
+    # chats with the Employee Agent). Empty URL = disabled, not an error:
+    # this project has no webhook receiver configured by default.
+    alert_webhook_url: str = ""
+    alert_webhook_timeout_seconds: float = 5.0
+
     # App
     env: str = "development"
     log_level: str = "INFO"

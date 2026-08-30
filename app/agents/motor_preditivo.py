@@ -9,6 +9,8 @@ Sub-agents/capabilities:
   4. Restocking Pre-List
 
 Writes to: mottainai.alert and mottainai.suggested_action (Postgres).
+Pushes a webhook for CRITICAL alerts not yet notified (best-effort — see
+app/notifications/alert_webhook.py; no-op if no webhook URL is configured).
 
 Note: SYSTEM_PROMPT and the operational context block fed to the LLM are
 deliberately kept in Portuguese, same as the other agents.
@@ -19,6 +21,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.runtime import MottainaiState, get_llm
 from app.analytics.forecasting import build_daily_series, forecast_product_demand
+from app.notifications.alert_webhook import notify_new_critical_alerts
 from app.rag.external_source import get_weather_forecast, interpret_weather_for_demand
 from app.tools.mcp_tools import mcp_call_weather_agent
 from app.tools.postgres_tools import (
@@ -58,7 +61,12 @@ async def node_motor_preditivo(state: MottainaiState) -> MottainaiState:
     sales = await get_sales_summary(empresa_id, days_back=60, store_id=store_id)
     alerts = await get_stock_alerts(empresa_id, store_id=store_id)
 
-    # 1b. Real demand forecast (moving average + trend, computed in Python —
+    # 1b. Pushes a webhook for any CRITICAL alert not already notified —
+    # see app/notifications/alert_webhook.py. Best-effort: never raises,
+    # a notification failure must not break the analysis below.
+    await notify_new_critical_alerts(empresa_id, alerts)
+
+    # 1c. Real demand forecast (moving average + trend, computed in Python —
     # see app/analytics/forecasting.py) for the top products by volume.
     top_products = sales[:8]
     demand_forecast: list[dict] = []
