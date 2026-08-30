@@ -9,6 +9,7 @@ Portuguese, like the agents' SYSTEM_PROMPT — the one exception is the /a2a
 app/integrations/mcp_a2a.py, which targets external systems, not end users.
 """
 import asyncio
+import logging
 import time
 from contextlib import asynccontextmanager
 
@@ -82,6 +83,7 @@ async def lifespan(app: FastAPI):
 
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Mottainai IA Layer",
@@ -191,6 +193,23 @@ async def _dependency_checks() -> dict[str, str]:
         checks["postgres"] = "unavailable"
 
     return checks
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """
+    Catch-all safety net: FastAPI/Starlette already dispatch HTTPException
+    and RequestValidationError to their own, more specific handlers, so this
+    only fires for something genuinely unexpected (a raw DB/driver error, a
+    bug). Logs the real exception server-side and returns a sanitized,
+    Portuguese, generic message — consistent with every other error response
+    in this file — instead of leaking exception internals to the client.
+    """
+    logger.error("Unhandled exception on %s %s", request.method, request.url.path, exc_info=exc)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "Erro interno inesperado. Tente novamente ou contate o suporte."},
+    )
 
 
 @app.get("/livez", tags=["Infra"])
