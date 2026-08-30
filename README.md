@@ -84,6 +84,41 @@ A aplicação registra métricas, latências, execução por agente e relatório
 
 ## Arquitetura
 
+### Diagrama de agentes
+
+```mermaid
+flowchart LR
+    U(["Usuário"])
+    GE["Guardrail Entrada"]
+    CTX["Contexto/Sessão"]
+    S["Supervisor"]
+    C["Cliente"]
+    FAQ["FAQ"]
+    FUNC["Funcionário"]
+    D["Dono"]
+    MP["Motor Preditivo"]
+    J["Juiz"]
+    GS["Guardrail Saída"]
+    E(["Fim"])
+
+    U --> GE
+    GE -->|"bloqueado"| E
+    GE -->|"aprovado"| CTX
+    CTX --> S
+    S -->|"CLIENTE"| C
+    S -->|"CLIENTE + palavra-chave FAQ"| FAQ
+    S -->|"ESTOQUISTA / GERENTE"| FUNC
+    S -->|"DONO"| D
+    S -->|"DONO + palavra-chave previsão"| MP
+    C --> J
+    FAQ --> J
+    FUNC --> J
+    D --> J
+    MP --> J
+    J --> GS
+    GS --> E
+```
+
 ```text
 Requisição do usuário (POST /chat)
         │

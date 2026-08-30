@@ -3,11 +3,8 @@
 Note: SYSTEM_PROMPT is deliberately kept in Portuguese, same as the other
 agents — it drives the product's actual response language to end users.
 """
-from langchain_core.messages import HumanMessage, SystemMessage
-
-from app.agents.runtime import MottainaiState, get_llm
-from app.memory.long_term import format_memory_for_prompt
-from app.rag.retriever import retrieve_with_sources
+from app.agents.rag_chat_base import run_rag_chat_agent
+from app.agents.runtime import MottainaiState
 
 SYSTEM_PROMPT = """Você é a assistente virtual do Mottainai.
 Responda apenas dúvidas gerais sobre o aplicativo, promoções, lojas, fidelidade e sustentabilidade.
@@ -19,17 +16,9 @@ Quando não houver base suficiente ou a pergunta estiver fora do escopo, diga qu
 
 
 async def node_agente_faq(state: MottainaiState) -> MottainaiState:
-    query = state["sanitized_input"]
-    context, sources = await retrieve_with_sources(query, state["empresa_id"])
-    memory = format_memory_for_prompt(state["memory"])
-    response = await get_llm(temperature=0.2).ainvoke([
-        SystemMessage(content=f"{SYSTEM_PROMPT}\n\n--- Memória ---\n{memory}\n\n--- Informações disponíveis ---\n{context}"),
-        *state["history"][-8:],
-        HumanMessage(content=query),
-    ])
-    usage = response.usage_metadata or {}
-    return {
-        **state, "agent_response": response.content, "sources": sources,
-        "input_tokens": usage.get("input_tokens", 0),
-        "output_tokens": usage.get("output_tokens", 0),
-    }
+    return await run_rag_chat_agent(
+        state,
+        system_prompt=SYSTEM_PROMPT,
+        temperature=0.2,
+        history_window=8,
+    )
