@@ -9,6 +9,8 @@ Sub-agents/capabilities:
   4. Restocking Pre-List
 
 Writes to: mottainai.alert and mottainai.suggested_action (Postgres).
+Pushes a webhook for CRITICAL alerts not yet notified (best-effort — see
+app/notifications/alert_webhook.py; no-op if no webhook URL is configured).
 
 Note: SYSTEM_PROMPT and the operational context block fed to the LLM are
 deliberately kept in Portuguese, same as the other agents.
@@ -18,6 +20,7 @@ import json
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.runtime import MottainaiState, get_llm
+from app.notifications.alert_webhook import notify_new_critical_alerts
 from app.rag.external_source import get_weather_forecast, interpret_weather_for_demand
 from app.tools.mcp_tools import mcp_call_weather_agent
 from app.tools.postgres_tools import get_expiring_batches, get_sales_summary, get_stock_alerts
@@ -46,6 +49,11 @@ async def node_motor_preditivo(state: MottainaiState) -> MottainaiState:
     expiring = await get_expiring_batches(empresa_id, days_ahead=14)
     sales = await get_sales_summary(empresa_id, days_back=60)
     alerts = await get_stock_alerts(empresa_id)
+
+    # 1b. Pushes a webhook for any CRITICAL alert not already notified —
+    # see app/notifications/alert_webhook.py. Best-effort: never raises,
+    # a notification failure must not break the analysis below.
+    await notify_new_critical_alerts(empresa_id, alerts)
 
     # 2. External source — Open-Meteo via MCP (A2A)
     try:
