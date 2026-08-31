@@ -113,10 +113,9 @@ class FuncionarioVisionWiringTests(unittest.IsolatedAsyncioTestCase):
         get_vision.assert_awaited_once_with("s1", limit=3)
         vision_source = next((s for s in result["sources"] if s["ref"] == "app.agents.visao (ai_results)"), None)
         self.assertIsNotNone(vision_source)
-        # Must be a value the messages collection's Mongo $jsonSchema
-        # validator accepts (rag, sql, api, manual, url, other) — a
-        # made-up value here 500s guardrail_saida's save_message() on
-        # every real chat request, invisible to tests that mock Mongo.
+        # Must be one of app.database.mongo_schema.SOURCE_TYPES — a made-up
+        # value here 500s guardrail_saida's save_message() on every real
+        # chat request, invisible to tests that mock Mongo.
         self.assertEqual(vision_source["type"], "other")
 
     async def test_no_vision_source_when_there_are_no_recent_analyses(self):
