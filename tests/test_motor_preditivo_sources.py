@@ -7,7 +7,7 @@ live-testing against the real database, not by the unit suite)."""
 import unittest
 from unittest.mock import AsyncMock, patch
 
-ALLOWED_SOURCE_TYPES = {"rag", "sql", "api", "manual", "url", "other"}
+from app.database.mongo_schema import SOURCE_TYPES as ALLOWED_SOURCE_TYPES
 
 
 class _StubResponse:

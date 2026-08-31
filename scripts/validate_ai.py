@@ -8,14 +8,21 @@ Covered checklist items:
   3. Respostas da IA sao validadas (Juiz fail-closed + guardrail de saida)
   5. Agentes possuem responsabilidades e ferramentas bem definidas
   6. RAG esta retornando contexto relevante
+  Extra: sources[].type usados pelos agentes batem com o enum aceito
+  pelo $jsonSchema do Mongo (evita a classe de bug que ja causou um 500
+  em producao — ver app/database/mongo_schema.py)
 """
 from __future__ import annotations
 
+import ast
 import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from app.database.mongo_schema import SOURCE_TYPES  # noqa: E402
+
 PROMPT_ASSIGN = re.compile(r"(?m)^\s*([A-Z][A-Z0-9_]*PROMPT[A-Z0-9_]*)\s*=")
 
 CHAT_GRAPH_AGENTS = {"cliente", "faq", "funcionario", "dono", "motor_preditivo", "juiz"}
@@ -124,16 +131,55 @@ def check_rag() -> list[str]:
     return errors
 
 
+def check_source_types() -> list[str]:
+    """
+    Statically scans app/agents/*.py for sources-list dict literals (identified
+    by having both a "type" and a "ref" key — the only shape that combination
+    appears in today) and flags any literal "type" value outside the enum the
+    messages collection's Mongo $jsonSchema validator accepts. This is a
+    static, no-external-deps generalization of a bug that already shipped to
+    main and 500'd real chat requests (see app/database/mongo_schema.py).
+
+    Only catches string-literal "type" values — a value built from a variable
+    or f-string is skipped, since it can't be checked statically. That matches
+    the actual bug pattern (a hardcoded literal), so it's an accepted gap.
+    """
+    errors = []
+    for path in sorted((ROOT / "app/agents").glob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Dict):
+                continue
+            keys = {k.value for k in node.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+            if not {"type", "ref"}.issubset(keys):
+                continue
+            for key_node, value_node in zip(node.keys, node.values):
+                if not (isinstance(key_node, ast.Constant) and key_node.value == "type"):
+                    continue
+                if isinstance(value_node, ast.Constant) and isinstance(value_node.value, str):
+                    if value_node.value not in SOURCE_TYPES:
+                        rel = path.relative_to(ROOT).as_posix()
+                        errors.append(
+                            f"[sources] {rel}:{node.lineno}: tipo de fonte '{value_node.value}' "
+                            f"fora do enum aceito pelo Mongo ({sorted(SOURCE_TYPES)})"
+                        )
+    return errors
+
+
 def run_checks(target: str = "all") -> int:
     targets = {
         "prompts": ("check_prompts_organized", "check_prompts_documented"),
         "responses": ("check_responses_validated",),
         "agents": ("check_agents_tools",),
         "rag": ("check_rag",),
+        "sources": ("check_source_types",),
     }
     all_errors: list[str] = []
     for name in targets.get(target, ("check_prompts_organized", "check_prompts_documented",
-                                     "check_responses_validated", "check_agents_tools", "check_rag")):
+                                     "check_responses_validated", "check_agents_tools", "check_rag",
+                                     "check_source_types")):
         all_errors += globals()[name]()
 
     if all_errors:
