@@ -127,6 +127,18 @@ jobs:
         run: python scripts/validate_ai.py rag
 
   # ============================================================
+  # JOB 9: Tipos de fonte validos (evita a classe de bug do enum do Mongo)
+  # ============================================================
+  source-types:
+    name: 9. Tipos de Fonte Validos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validar sources[].type contra o enum aceito pelo Mongo
+        run: python scripts/validate_ai.py sources
+
+  # ============================================================
   # JOB 7: Sem credenciais expostas
   # Checklist: "Não existem credenciais expostas"
   # ============================================================
