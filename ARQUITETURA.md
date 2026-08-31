@@ -107,7 +107,7 @@ Requisição do Usuário (HTTP POST /chat)
 | Requisito | Implementação |
 |-----------|---------------|
 | FastAPI | `app/main.py` |
-| 5+ agentes | 7 agentes: Supervisor, Cliente, Funcionário, Dono, Motor Preditivo, Juiz, Governança |
+| 5+ agentes | 9 agentes: Supervisor, Cliente, FAQ, Funcionário, Dono, Motor Preditivo, Juiz, Governança, Visão |
 | LangChain | Todos os agentes usam `ChatGroq` (LangChain) |
 | LangGraph | `supervisor.py` — `StateGraph` com nós e arestas condicionais |
 | Sessão por usuário | `session_id` → MongoDB `conversations` + Redis rate-limit |
