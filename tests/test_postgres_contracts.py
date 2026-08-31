@@ -155,7 +155,11 @@ class PostgresSchemaContracts(unittest.IsolatedAsyncioTestCase):
         execute.assert_awaited_once()  # the empty-product-ids call never touched the DB
         sql = execute.await_args.args[0]
         self.assertIn("p.product_id = ANY(:product_ids)", sql)
-        self.assertIn("GROUP BY p.product_id, st.sale_date", sql)
+        # sale_date is a `timestamp`, so it must be cast to a date to actually
+        # aggregate per day — grouping by the raw timestamp yields one row per
+        # sale instant and a series that never lines up with a date lookup.
+        self.assertIn("CAST(st.sale_date AS DATE) AS sale_date", sql)
+        self.assertIn("GROUP BY p.product_id, CAST(st.sale_date AS DATE)", sql)
         self.assertEqual(execute.await_args.kwargs["empresa_id"], 42)
         self.assertEqual(
             execute.await_args.kwargs["params"],

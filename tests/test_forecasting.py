@@ -26,6 +26,32 @@ class BuildDailySeriesTests(unittest.TestCase):
 
         self.assertEqual(series, [0, 0])
 
+    def test_accepts_datetime_sale_date_as_returned_by_postgres(self):
+        # mottainai.sales_transaction.sale_date is a `timestamp`, so a row can
+        # carry a datetime rather than a date. A datetime never matches the
+        # date key this function looks up, which silently zeroed every real
+        # forecast while the date-only fixtures above kept passing.
+        reference = datetime.date(2026, 1, 10)
+        rows = [
+            {"product_id": 1, "sale_date": datetime.datetime(2026, 1, 9, 13, 1, 37), "quantity_sold": 5},
+            {"product_id": 1, "sale_date": datetime.datetime(2026, 1, 7, 2, 35, 8), "quantity_sold": 3},
+        ]
+
+        series = build_daily_series(rows, product_id=1, days_back=3, reference_date=reference)
+
+        self.assertEqual(series, [3, 0, 5])
+
+    def test_sums_multiple_sales_on_the_same_day(self):
+        reference = datetime.date(2026, 1, 3)
+        rows = [
+            {"product_id": 1, "sale_date": datetime.datetime(2026, 1, 2, 9, 0), "quantity_sold": 4},
+            {"product_id": 1, "sale_date": datetime.datetime(2026, 1, 2, 18, 30), "quantity_sold": 6},
+        ]
+
+        series = build_daily_series(rows, product_id=1, days_back=1, reference_date=reference)
+
+        self.assertEqual(series, [10])
+
 
 class ForecastProductDemandTests(unittest.TestCase):
     def test_no_history_returns_zero_forecast(self):

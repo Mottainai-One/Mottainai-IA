@@ -21,11 +21,18 @@ def build_daily_series(
     product, oldest day first, ending yesterday.
     """
     reference_date = reference_date or datetime.date.today()
-    by_date = {
-        row["sale_date"]: int(row["quantity_sold"])
-        for row in rows
-        if row["product_id"] == product_id
-    }
+    # sale_date is a Postgres `timestamp`, so it arrives as a datetime unless
+    # the query casts it. A datetime never equals the plain date used for the
+    # lookup below, which silently zeroed every forecast — normalize it here so
+    # the function is correct for either shape.
+    by_date: dict[datetime.date, int] = {}
+    for row in rows:
+        if row["product_id"] != product_id:
+            continue
+        sale_date = row["sale_date"]
+        if isinstance(sale_date, datetime.datetime):
+            sale_date = sale_date.date()
+        by_date[sale_date] = by_date.get(sale_date, 0) + int(row["quantity_sold"])
     series = []
     for offset in range(days_back, 0, -1):
         day = reference_date - datetime.timedelta(days=offset)

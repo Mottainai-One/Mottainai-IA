@@ -249,7 +249,7 @@ async def get_daily_sales_series(
     sql = f"""
         SELECT
             p.product_id,
-            st.sale_date,
+            CAST(st.sale_date AS DATE) AS sale_date,
             SUM(si.quantity_sold) AS quantity_sold
         FROM mottainai.sales_transaction st
         JOIN mottainai.sale_item si ON si.sale_id = st.sale_id AND si.sale_date = st.sale_date
@@ -268,8 +268,8 @@ async def get_daily_sales_series(
           AND c.active = TRUE
           AND c.deleted_at IS NULL
           {store_filter}
-        GROUP BY p.product_id, st.sale_date
-        ORDER BY p.product_id, st.sale_date
+        GROUP BY p.product_id, CAST(st.sale_date AS DATE)
+        ORDER BY p.product_id, CAST(st.sale_date AS DATE)
     """
     params: dict[str, Any] = {"days_back": days_back, "product_ids": product_ids}
     if store_id is not None:
