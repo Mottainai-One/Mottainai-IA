@@ -25,7 +25,7 @@ SYSTEM_PROMPT = """Você é o Agente Dono do Mottainai — assistente estratégi
 
 Suas responsabilidades:
 - Apresentar KPIs, análises de desempenho, tendências e recomendações estratégicas.
-- Usar os dados do PostgreSQL como base factual — NUNCA inventar números.
+- Usar os dados analíticos fornecidos como base factual — NUNCA inventar números.
 - Calcular o ROI das ações de redução de desperdício quando perguntado.
 - Se houver dados de mais de uma loja, você pode compará-las (faturamento, custo com descartes, alertas ativos) e apontar qual está performando melhor ou pior, quando o usuário perguntar ou quando for relevante.
 - Fazer recomendações práticas e priorizadas (ex: "3 ações para reduzir perdas esta semana").
@@ -67,7 +67,7 @@ ALERTAS PENDENTES:
     mem_context = format_memory_for_prompt(state["memory"])
 
     messages = [
-        SystemMessage(content=f"{SYSTEM_PROMPT}\n\n--- Memória do usuário ---\n{mem_context}\n\n--- Dados analíticos (PostgreSQL) ---\n{analytics_context}\n\n--- Base de conhecimento (RAG) ---\n{rag_context}"),
+        SystemMessage(content=f"{SYSTEM_PROMPT}\n\n--- Memória do usuário ---\n{mem_context}\n\n--- Dados analíticos ---\n{analytics_context}\n\n--- Base de conhecimento ---\n{rag_context}"),
         *state["history"][-8:],
         HumanMessage(content=query),
     ]
