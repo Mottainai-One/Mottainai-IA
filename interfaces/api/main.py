@@ -21,7 +21,7 @@ try:
 except ImportError:
     pass
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 import httpx
 from fastapi import (
@@ -635,6 +635,10 @@ class RagDocumentUploadRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     source: str = Field(..., min_length=1, max_length=100, description="Ex: manual_operacional, faq, politica_interna")
     text: str = Field(..., min_length=1, max_length=50_000)
+    category: Literal["MANUAL", "FAQ", "PROCEDIMENTO", "TREINAMENTO", "POLITICA"] | None = Field(
+        None, description="Categoria da base de conhecimento. Se omitida, é derivada de 'source'."
+    )
+    version: str = Field("1.0", min_length=1, max_length=20)
 
     model_config = {"extra": "forbid", "json_schema_extra": {"examples": [{"value": {
         "slug": "politica-troca-devolucao",
@@ -664,6 +668,8 @@ async def upload_rag_document(
             title=body.title,
             source=body.source,
             text=body.text,
+            category=body.category,
+            version=body.version,
         )
     except DuplicateSlugError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
