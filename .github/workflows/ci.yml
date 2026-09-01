@@ -223,8 +223,14 @@ jobs:
             [ -z "$line" ] && continue
             COMMIT_MSG=$(echo "$line" | cut -d' ' -f2-)
             # Merge commits (e.g. from syncing a branch with main) don't carry
-            # a conventional-commit type of their own and are exempt.
-            if echo "$COMMIT_MSG" | grep -qE "^Merge "; then
+            # a conventional-commit type of their own and are exempt. So are
+            # reverts: PATTERN already blesses a "revert:" type, but GitHub's
+            # Revert button and `git revert` both write 'Revert "<original
+            # subject>"' instead, which never matches it — so the check failed
+            # every revert PR over a subject line nobody typed and the button
+            # gives no way to change. The quote is part of the match so a
+            # hand-written "Reverter tudo" is still rejected.
+            if echo "$COMMIT_MSG" | grep -qE '^(Merge |Revert ")'; then
               continue
             fi
             if ! echo "$COMMIT_MSG" | grep -qE "$PATTERN"; then
