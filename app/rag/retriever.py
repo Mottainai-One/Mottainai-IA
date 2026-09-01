@@ -3,9 +3,9 @@ RAG — Retriever: semantic search over rag_chunks (MongoDB).
 Uses local embeddings (sentence-transformers) — zero API cost.
 Returns relevant chunks with a cosine similarity score.
 
-Note: the context/source strings built for the LLM prompt (e.g. "Nenhum
-documento relevante...", "[Fonte N — score ...]") are deliberately kept in
-Portuguese, like the agents' SYSTEM_PROMPT.
+Note: the context strings built for the LLM prompt (e.g. "Nenhum documento
+relevante...") are deliberately kept in Portuguese, like the agents'
+SYSTEM_PROMPT.
 """
 from __future__ import annotations
 
@@ -134,6 +134,20 @@ async def retrieve(
     return scored[:top_k]
 
 
+# Retrieved chunks are joined by a plain rule instead of the numbered
+# "[Fonte N — score X]" header they used to carry. That header was the only
+# citable handle in the prompt, and the model was observed echoing it back
+# into a user-facing answer ("(ver Fonte 3)") — which every agent's
+# SYSTEM_PROMPT forbids, since it reveals how the assistant works behind the
+# scenes. A label that does not exist cannot be quoted. The separator is kept
+# so chunk boundaries stay visible and unrelated facts are not read as one
+# passage. Traceability is unaffected: the `sources` list below still carries
+# documentId, chunk and score, and that list — not this string — is what is
+# written to messages.sources and what the Judge grades grounding against
+# (app/agents/juiz.py).
+CHUNK_SEPARATOR = "\n\n---\n\n"
+
+
 def _rag_cache_key(query: str, empresa_id: int, top_k: int) -> str:
     normalized = f"{query.strip().lower()}::{top_k}"
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
@@ -189,8 +203,8 @@ async def retrieve_with_sources(
 
     context_parts = []
     sources = []
-    for i, r in enumerate(results, 1):
-        context_parts.append(f"[Fonte {i} — score {r['score']}]\n{r['text']}")
+    for r in results:
+        context_parts.append(r["text"])
         sources.append(
             {
                 "type": "rag",
@@ -199,6 +213,6 @@ async def retrieve_with_sources(
             }
         )
 
-    context = "\n\n".join(context_parts)
+    context = CHUNK_SEPARATOR.join(context_parts)
     await _write_rag_cache(cache_key, context, sources)
     return context, sources
