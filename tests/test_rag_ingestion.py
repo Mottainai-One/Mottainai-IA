@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 from pymongo.errors import DuplicateKeyError
 
-from app.rag.ingestion import DuplicateSlugError, ingest_document, split_into_chunks
+from app.rag.ingestion import (
+    CATEGORIES,
+    DuplicateSlugError,
+    category_for_source,
+    ingest_document,
+    split_into_chunks,
+)
 
 
 class SplitIntoChunksTests(unittest.TestCase):
@@ -114,6 +120,66 @@ class IngestDocumentTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertEqual(db.rag_documents.inserted_docs, [])  # never touched the DB
+
+    async def test_writes_the_fields_the_collection_schema_requires(self):
+        # rag_documents' $jsonSchema requires empresaId, title, category,
+        # version and createdAt. Omitting category/version made every real
+        # upload fail validation with a 500 while the mocked tests passed.
+        db = SimpleNamespace(rag_documents=FakeCollection(), rag_chunks=FakeCollection())
+
+        with (
+            patch("app.rag.ingestion.get_mongo_db", return_value=db),
+            patch("app.rag.ingestion.get_embedding_model", return_value=self._model()),
+        ):
+            await ingest_document(
+                empresa_id=1, slug="doc-x", title="Doc X",
+                source="faq", text="Um.\n\nDois.",
+            )
+
+        document = db.rag_documents.inserted_docs[0]
+        for field in ("empresaId", "title", "category", "version", "createdAt"):
+            self.assertIn(field, document)
+        self.assertIn(document["category"], CATEGORIES)
+
+    async def test_derives_category_from_source(self):
+        cases = {
+            "faq": "FAQ",
+            "manual_operacional": "MANUAL",
+            "procedimento_interno": "PROCEDIMENTO",
+            "politica_interna": "POLITICA",
+            "treinamento_equipe": "TREINAMENTO",
+            "algo_desconhecido": "MANUAL",
+        }
+        for source, expected in cases.items():
+            self.assertEqual(category_for_source(source), expected)
+
+    async def test_explicit_category_overrides_the_source_mapping(self):
+        db = SimpleNamespace(rag_documents=FakeCollection(), rag_chunks=FakeCollection())
+
+        with (
+            patch("app.rag.ingestion.get_mongo_db", return_value=db),
+            patch("app.rag.ingestion.get_embedding_model", return_value=self._model()),
+        ):
+            await ingest_document(
+                empresa_id=1, slug="doc-y", title="Doc Y", source="faq",
+                text="Um.\n\nDois.", category="POLITICA", version="2.1",
+            )
+
+        document = db.rag_documents.inserted_docs[0]
+        self.assertEqual(document["category"], "POLITICA")
+        self.assertEqual(document["version"], "2.1")
+
+    async def test_rejects_a_category_outside_the_enum(self):
+        db = SimpleNamespace(rag_documents=FakeCollection(), rag_chunks=FakeCollection())
+
+        with patch("app.rag.ingestion.get_mongo_db", return_value=db):
+            with self.assertRaises(ValueError):
+                await ingest_document(
+                    empresa_id=1, slug="doc-z", title="T", source="faq",
+                    text="algo", category="INVENTADA",
+                )
+
+        self.assertEqual(db.rag_documents.inserted_docs, [])
 
 
 if __name__ == "__main__":

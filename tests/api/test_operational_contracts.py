@@ -173,8 +173,11 @@ class RagDocumentUploadRouteTests(unittest.IsolatedAsyncioTestCase):
         with patch("app.rag.ingestion.ingest_document", new=tool):
             result = await upload_rag_document(body, AuthContext(usuario_id=7, empresa_id=42, role="GERENTE"))
 
+        # category/version are required by rag_documents' $jsonSchema; the
+        # route forwards them so the write is not rejected by Mongo.
         tool.assert_awaited_once_with(
             empresa_id=42, slug="faq-x", title="FAQ X", source="faq", text="algo",
+            category=None, version="1.0",
         )
         self.assertEqual(result["chunks"], 3)
 

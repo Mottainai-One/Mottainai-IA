@@ -21,6 +21,30 @@ from app.rag.retriever import get_embedding_model
 
 MAX_CHUNK_CHARS = 800
 
+# rag_documents' $jsonSchema requires a `category` from this enum and a
+# `version` string. The upload endpoint takes a free-text `source`
+# ("faq", "manual_operacional", ...), so map it onto the enum the
+# collection actually accepts instead of writing a document Mongo rejects.
+CATEGORIES = ("MANUAL", "FAQ", "PROCEDIMENTO", "TREINAMENTO", "POLITICA")
+DEFAULT_CATEGORY = "MANUAL"
+DEFAULT_VERSION = "1.0"
+
+
+def category_for_source(source: str) -> str:
+    """Best-effort mapping of the free-text `source` onto rag_documents.category."""
+    normalized = source.strip().upper()
+    if normalized in CATEGORIES:
+        return normalized
+    if normalized.startswith("FAQ"):
+        return "FAQ"
+    if normalized.startswith("PROCEDIMENTO"):
+        return "PROCEDIMENTO"
+    if normalized.startswith("TREINAMENTO"):
+        return "TREINAMENTO"
+    if normalized.startswith("POLITICA"):
+        return "POLITICA"
+    return DEFAULT_CATEGORY
+
 
 class DuplicateSlugError(ValueError):
     """Raised when rag_documents already has this slug (unique index)."""
@@ -62,20 +86,29 @@ async def ingest_document(
     title: str,
     source: str,
     text: str,
+    category: str | None = None,
+    version: str = DEFAULT_VERSION,
 ) -> dict:
     """
     Chunks `text`, embeds every chunk immediately (batched, same pattern as
     scripts/generate_embeddings.py), and writes rag_documents + rag_chunks.
 
+    `category` and `version` are required by the collection's $jsonSchema;
+    when no category is given it is derived from `source`.
+
     Raises DuplicateSlugError if `slug` already exists — rag_documents.slug
     has a unique index (scripts/setup_mongo.py); relies on that DB-level
     constraint rather than a check-then-insert, which would race under
     concurrent uploads. Raises plain ValueError if `text` produces no
-    chunks (e.g. whitespace-only).
+    chunks (e.g. whitespace-only) or if `category` is outside the enum.
     """
     chunks_text = split_into_chunks(text)
     if not chunks_text:
         raise ValueError("O texto não produziu nenhum trecho após a divisão em chunks.")
+
+    category = category_for_source(source) if category is None else category.strip().upper()
+    if category not in CATEGORIES:
+        raise ValueError(f"category deve ser um de {CATEGORIES}, recebido '{category}'.")
 
     db = get_mongo_db()
     now = datetime.now(timezone.utc)
@@ -86,6 +119,8 @@ async def ingest_document(
             "empresaId": empresa_id,
             "title": title,
             "source": source,
+            "category": category,
+            "version": version,
             "createdAt": now,
         })
     except DuplicateKeyError as exc:

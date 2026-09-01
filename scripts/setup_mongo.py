@@ -86,6 +86,8 @@ async def setup(seed_demo: bool = False):
                 "empresaId": empresa_id,
                 "title": "Política de Gestão de Estoque — Mottainai",
                 "source": "manual_operacional",
+                "category": "POLITICA",
+                "version": "1.0",
                 "createdAt": utcnow(),
             },
             {
@@ -93,6 +95,8 @@ async def setup(seed_demo: bool = False):
                 "empresaId": empresa_id,
                 "title": "Guia de Controle de Perecíveis e Validade",
                 "source": "manual_operacional",
+                "category": "MANUAL",
+                "version": "1.0",
                 "createdAt": utcnow(),
             },
             {
@@ -100,6 +104,8 @@ async def setup(seed_demo: bool = False):
                 "empresaId": empresa_id,
                 "title": "Procedimentos de Descarte e Doação",
                 "source": "manual_operacional",
+                "category": "PROCEDIMENTO",
+                "version": "1.0",
                 "createdAt": utcnow(),
             },
             {
@@ -107,6 +113,8 @@ async def setup(seed_demo: bool = False):
                 "empresaId": empresa_id,
                 "title": "FAQ — Perguntas Frequentes de Clientes",
                 "source": "faq",
+                "category": "FAQ",
+                "version": "1.0",
                 "createdAt": utcnow(),
             },
         ]
