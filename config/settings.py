@@ -77,6 +77,15 @@ class Settings(BaseSettings):
     # (timeout, rate limit, 5xx error) with exponential backoff + jitter.
     llm_max_retries: int = 3
 
+    # Output cap sent to the provider. Left implicit, the client default
+    # (3072 tokens) silently truncated the Predictive Engine's structured
+    # JSON mid-object, which the Judge then correctly rejected as malformed.
+    # Providers bill this against the per-minute token budget as *reserved*
+    # tokens, so it is not free to raise: on Groq's free tier (8000 TPM) the
+    # engine's ~2.3k-token prompt plus this cap has to stay under the limit
+    # for both the agent call and the Judge's follow-up on its answer.
+    llm_max_output_tokens: int = 4096
+
     # Same idea for Postgres: retries on a transient connection failure
     # (SQLAlchemy OperationalError) with exponential backoff + jitter.
     # Does NOT retry query errors (bad SQL, constraint violations) — those

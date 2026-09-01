@@ -43,3 +43,18 @@ class LlmRuntimeTests(unittest.TestCase):
     def test_rejects_unknown_llm_provider(self):
         with self.assertRaises(ValueError):
             Settings(_env_file=None, llm_provider="unknown")
+
+    def test_caps_output_tokens_explicitly(self):
+        # Without an explicit cap the client defaults to 3072 output tokens,
+        # which truncated the Predictive Engine's structured JSON mid-object
+        # (finish_reason="length") and got it rejected by the Judge.
+        runtime.settings = Settings(
+            _env_file=None,
+            llm_provider="ollama",
+            ollama_api_key="test-key",
+            llm_max_output_tokens=4096,
+        )
+
+        llm = runtime.get_llm(temperature=0.2).bound
+
+        self.assertEqual(llm.max_tokens, 4096)

@@ -92,5 +92,31 @@ class MotorPreditivoStoreScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["agent_response"], "análise gerada")
 
 
+class MotorPreditivoContextSizeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_caps_the_expiring_batches_sent_to_the_llm(self):
+        # The batch list is the largest block in the prompt and the only one
+        # that used to go in unbounded, which made the answer long enough to
+        # blow the provider's per-minute token budget on the Judge's follow-up
+        # call. Rows arrive most-urgent-first, so the cap keeps the ones that
+        # matter.
+        from app.agents import motor_preditivo
+
+        batches = [{"batch_id": i, "product_name": f"Produto {i}"} for i in range(20)]
+        llm = _StubLlm()
+
+        with (
+            patch("app.agents.motor_preditivo.get_expiring_batches", new=AsyncMock(return_value=batches)),
+            patch("app.agents.motor_preditivo.get_sales_summary", new=AsyncMock(return_value=[])),
+            patch("app.agents.motor_preditivo.get_stock_alerts", new=AsyncMock(return_value=[])),
+            patch("app.agents.motor_preditivo.mcp_call_weather_agent", new=AsyncMock(side_effect=RuntimeError("sem clima"))),
+            patch("app.agents.motor_preditivo.get_llm", return_value=llm),
+        ):
+            await motor_preditivo.node_motor_preditivo({"empresa_id": 42})
+
+        prompt_text = str(llm.last_messages[0].content)
+        self.assertIn('"batch_id": 9', prompt_text)
+        self.assertNotIn('"batch_id": 10', prompt_text)
+
+
 if __name__ == "__main__":
     unittest.main()

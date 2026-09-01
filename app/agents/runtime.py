@@ -53,6 +53,7 @@ def _build_llm(temperature: float) -> BaseChatModel:
             base_url=settings.ollama_local_base_url.rstrip("/"),
             model=settings.ollama_local_model,
             temperature=temperature,
+            max_tokens=settings.llm_max_output_tokens,
             http_client=_http_client,
             http_async_client=_http_async_client,
         )
@@ -65,6 +66,7 @@ def _build_llm(temperature: float) -> BaseChatModel:
             base_url=settings.ollama_base_url.rstrip("/"),
             model=settings.ollama_model,
             temperature=temperature,
+            max_tokens=settings.llm_max_output_tokens,
             http_client=_http_client,
             http_async_client=_http_async_client,
         )
@@ -75,6 +77,7 @@ def _build_llm(temperature: float) -> BaseChatModel:
         api_key=settings.groq_api_key,
         model=settings.groq_model,
         temperature=temperature,
+        max_tokens=settings.llm_max_output_tokens,
         http_client=_http_client,
         http_async_client=_http_async_client,
     )

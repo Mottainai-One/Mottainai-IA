@@ -106,8 +106,8 @@ ESCOPO DA ANÁLISE: {scope_line}
 PREVISÃO DE DEMANDA CALCULADA (média móvel ponderada com tendência, próximos 7 dias, já pronta — apenas explique):
 {json.dumps(demand_forecast, default=str, ensure_ascii=False, indent=2)}
 
-LOTES COM RISCO DE VENCIMENTO (próximos 14 dias):
-{json.dumps(expiring, default=str, ensure_ascii=False, indent=2)}
+LOTES COM RISCO DE VENCIMENTO (próximos 14 dias, os mais urgentes primeiro):
+{json.dumps(expiring[:10], default=str, ensure_ascii=False, indent=2)}
 
 HISTÓRICO DE VENDAS (últimos 60 dias, para contexto adicional):
 {json.dumps(sales[:15], default=str, ensure_ascii=False, indent=2)}

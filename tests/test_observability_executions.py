@@ -53,13 +53,30 @@ class RecordAgentExecutionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(executions, "get_mongo_db", return_value=db):
             await executions.record_agent_execution(
                 empresa_id=42, session_id="s1", agent="dono", status="error", latency_s=0.1,
-                conversation_id="c1", node_latencies_ms={"supervisor": 12.3}, error="timeout",
+                conversation_id="c1", node_latencies_ms={"supervisor": 12.3},
+                error={"message": "timeout"},
             )
 
         document = collection.inserted[0]
         self.assertEqual(document["conversationId"], "c1")
         self.assertEqual(document["nodeLatenciesMs"], {"supervisor": 12.3})
-        self.assertEqual(document["error"], "timeout")
+        self.assertEqual(document["error"], {"message": "timeout"})
+
+    async def test_wraps_a_string_error_into_an_object(self):
+        # agent_executions' $jsonSchema types `error` as object|null. Passing
+        # the bare string the API layer had (an exception class name) failed
+        # validation, so recording a failure raised a 500 of its own and the
+        # trace was lost — exactly when it was most needed.
+        collection = FakeAgentExecutionsCollection()
+        db = type("Database", (), {"agent_executions": collection})()
+
+        with patch.object(executions, "get_mongo_db", return_value=db):
+            await executions.record_agent_execution(
+                empresa_id=42, session_id="s1", agent="unavailable", status="error",
+                latency_s=0.1, error="APIStatusError",
+            )
+
+        self.assertEqual(collection.inserted[0]["error"], {"message": "APIStatusError"})
 
 
 if __name__ == "__main__":
