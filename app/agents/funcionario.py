@@ -35,11 +35,22 @@ from app.rag.retriever import retrieve_with_sources
 from app.tools.postgres_tools import get_expiring_batches, get_inventory_status, get_stock_alerts
 from app.tools.redis_tools import format_notifications_for_agent, get_inbox
 
+# Every other block in the operational context is bounded — alerts and
+# notifications by their query's `limit`, vision analyses by limit=3,
+# inventory by a [:10] slice — but the expiring batches were dumped whole,
+# so the prompt grew with the number of batches near expiry. At 20 batches
+# that block alone was ~1.4k tokens and pushed the request to 8120 against
+# Groq's 8000 TPM ceiling, so the agent answered HTTP 503 to *every*
+# question, not just ones about batches. get_expiring_batches() already
+# sorts by expiration_date ASC, so the head of the list is the urgent end.
+# Same cap, same reason, as the Predictive Engine (motor_preditivo.py).
+EXPIRING_BATCHES_IN_PROMPT = 10
+
 SYSTEM_PROMPT = """Você é o Agente Funcionário do Mottainai — assistente operacional para estoquistas e gerentes.
 
 Suas responsabilidades:
 - Responder com precisão técnica sobre estoque, inventário, alertas e entrada de mercadorias.
-- Usar os dados do PostgreSQL (fornecidos no contexto) como fonte da verdade.
+- Usar os dados operacionais fornecidos como fonte da verdade.
 - Apresentar dados de forma objetiva: números exatos, prioridades claras.
 - NÃO inventar dados de estoque, quantidades ou validades.
 - Para ações críticas (descartes, transferências), orientar sobre o procedimento correto.
@@ -67,7 +78,10 @@ async def node_agente_funcionario(state: MottainaiState) -> MottainaiState:
     # RAG: manual/procedures
     rag_context, sources = await retrieve_with_sources(query, empresa_id)
 
-    # Formats the operational context (kept in Portuguese, see module docstring)
+    # Formats the operational context (kept in Portuguese, see module docstring).
+    # The batch list is truncated, so the heading carries the real total as
+    # well — otherwise the agent would report the slice as the whole picture.
+    expiring_shown = expiring_data[:EXPIRING_BATCHES_IN_PROMPT]
     ops_context = f"""
 ALERTAS ATIVOS ({len(alerts_data)}):
 {json.dumps(alerts_data, default=str, ensure_ascii=False, indent=2)}
@@ -75,8 +89,8 @@ ALERTAS ATIVOS ({len(alerts_data)}):
 ESTOQUE (situação crítica primeiro):
 {json.dumps(inventory_data[:10], default=str, ensure_ascii=False, indent=2)}
 
-LOTES VENCENDO EM 7 DIAS ({len(expiring_data)}):
-{json.dumps(expiring_data, default=str, ensure_ascii=False, indent=2)}
+LOTES VENCENDO EM 7 DIAS (total {len(expiring_data)}, listando os {len(expiring_shown)} mais urgentes):
+{json.dumps(expiring_shown, default=str, ensure_ascii=False, indent=2)}
 
 ANÁLISES DE PRATELEIRA RECENTES NESTA CONVERSA ({len(vision_analyses)}):
 {json.dumps(vision_analyses, default=str, ensure_ascii=False, indent=2)}
@@ -88,7 +102,7 @@ NOTIFICAÇÕES:
     mem_context = format_memory_for_prompt(state["memory"])
 
     messages = [
-        SystemMessage(content=f"{SYSTEM_PROMPT}\n\n--- Memória do usuário ---\n{mem_context}\n\n--- Dados operacionais (PostgreSQL) ---\n{ops_context}\n\n--- Base de conhecimento (RAG) ---\n{rag_context}"),
+        SystemMessage(content=f"{SYSTEM_PROMPT}\n\n--- Memória do usuário ---\n{mem_context}\n\n--- Dados operacionais ---\n{ops_context}\n\n--- Base de conhecimento ---\n{rag_context}"),
         *state["history"][-8:],
         HumanMessage(content=query),
     ]
