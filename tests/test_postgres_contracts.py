@@ -104,7 +104,13 @@ class PostgresSchemaContracts(unittest.IsolatedAsyncioTestCase):
 
         sql = execute.await_args.args[0]
         self.assertIn("si.sale_id = st.sale_id AND si.sale_date = st.sale_date", sql)
-        self.assertNotIn("si.status", sql)
+        # sale_item.status is an enum of SOLD/CANCELED/RETURNED, and the whole
+        # point of this test's name is that the summary counts only real sales.
+        # It used to assert the opposite (assertNotIn "si.status"), pinning the
+        # missing filter in place: cancelled and returned line items were summed
+        # into "top produtos" and into the demand forecast that reads this data.
+        # get_kpis and get_kpis_by_store already filtered it — these two did not.
+        self.assertIn("si.status = 'SOLD'", sql)
         self.assertIn("st.deleted_at IS NULL", sql)
         self.assertIn("p.barcode     AS barcode", sql)
         self.assertNotIn("p.sku", sql)
@@ -112,6 +118,18 @@ class PostgresSchemaContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(execute.await_args.kwargs["empresa_id"], 42)
         self.assertEqual(execute.await_args.kwargs["params"]["days_back"], 60)
         self.assertNotIn("store_id", execute.await_args.kwargs["params"])
+
+    async def test_daily_sales_series_counts_only_sold_line_items(self):
+        # This series is the demand forecast's only input
+        # (app/analytics/forecasting.py). Counting CANCELED/RETURNED items here
+        # inflates every prediction, silently and in the same direction.
+        with patch(
+            "app.tools.postgres_tools._exec",
+            new=AsyncMock(return_value=[]),
+        ) as execute:
+            await postgres_tools.get_daily_sales_series(42, [10], days_back=28)
+
+        self.assertIn("si.status = 'SOLD'", execute.await_args.args[0])
 
     async def test_sales_summary_binds_optional_store_filter(self):
         with patch(

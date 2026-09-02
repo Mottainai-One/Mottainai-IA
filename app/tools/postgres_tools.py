@@ -210,6 +210,7 @@ async def get_sales_summary(
         WHERE c.company_id = :empresa_id
           AND st.sale_date >= (CURRENT_DATE - CAST(:days_back AS INTEGER))
           AND st.status = 'COMPLETED'
+          AND si.status = 'SOLD'
           AND st.deleted_at IS NULL
           AND p.active = TRUE
           AND p.deleted_at IS NULL
@@ -259,6 +260,7 @@ async def get_daily_sales_series(
         WHERE c.company_id = :empresa_id
           AND st.sale_date >= (CURRENT_DATE - CAST(:days_back AS INTEGER))
           AND st.status = 'COMPLETED'
+          AND si.status = 'SOLD'
           AND st.deleted_at IS NULL
           AND p.product_id = ANY(:product_ids)
           AND p.active = TRUE
