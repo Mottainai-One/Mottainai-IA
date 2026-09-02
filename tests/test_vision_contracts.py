@@ -85,3 +85,17 @@ class VisionMimeContracts(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VisionTenantScopingContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_empresa_id_is_required_and_keyword_only(self):
+        # empresa_id scopes the inventory cross-check and tags the persisted
+        # ai_results document. It used to default to 1, so any caller that
+        # forgot it analysed one company's shelf against another's stock —
+        # silently, with no error to notice. Making it keyword-only and
+        # required turns that mistake into a TypeError at the call site.
+        with self.assertRaises(TypeError):
+            await analyze_shelf(image_bytes=b"x", image_mime_type="image/png")
+
+        with self.assertRaises(TypeError):
+            await analyze_shelf(None, b"x", "image/png", 1)  # positional no longer accepted
