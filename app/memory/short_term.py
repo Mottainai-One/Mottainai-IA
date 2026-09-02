@@ -34,17 +34,28 @@ def _as_utc(value: datetime) -> datetime:
 
 
 async def load_history(session_id: str, limit: int = 20) -> list[BaseMessage]:
-    """Loads the latest messages of a session as LangChain messages."""
+    """
+    Loads the latest messages of a session as LangChain messages, oldest first.
+
+    Sorts descending and reverses, rather than sorting ascending: `limit` is
+    applied by the database, so an ascending sort would hand back the *first*
+    `limit` messages of the conversation and never the recent ones. Past that
+    many messages the agent's context froze at the opening of the conversation
+    and nothing said afterwards could reach it — the caller asks for the latest
+    (supervisor.py uses 20, GET /chat/history uses 50), so the newest end is
+    what has to survive the limit. The reverse restores chronological order,
+    which is what the agents and the history endpoint render.
+    """
     db = get_mongo_db()
     conv = await db.conversations.find_one({"sessionId": session_id})
     if not conv:
         return []
 
     cursor = db.messages.find(
-        {"conversationId": conv["_id"]}, sort=[("createdAt", 1)]
+        {"conversationId": conv["_id"]}, sort=[("createdAt", -1)]
     ).limit(limit)
     messages: list[BaseMessage] = []
-    async for doc in cursor:
+    for doc in reversed([doc async for doc in cursor]):
         content = doc.get("content", "")
         if doc.get("role") == "user":
             messages.append(HumanMessage(content=content))
