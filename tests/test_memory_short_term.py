@@ -120,6 +120,29 @@ class LoadHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result), 2)
         self.assertEqual(db.messages.last_cursor.limit_value, 2)
 
+    async def test_keeps_the_newest_messages_when_the_limit_truncates(self):
+        # The limit is applied by the database, so the sort direction decides
+        # which end of the conversation survives it. Sorting ascending kept the
+        # FIRST messages: past `limit` messages the agent's context froze at the
+        # opening of the conversation and nothing newer could ever reach it.
+        messages = [{"role": "user", "content": str(i)} for i in range(5)]
+        _, db = await self._run({"sessionId": "s1", "_id": "c1"}, messages, limit=2)
+
+        self.assertEqual(db.messages.last_sort, [("createdAt", -1)])
+
+    async def test_returns_messages_in_chronological_order(self):
+        # The descending sort is a database detail; callers (the agents' history
+        # window and GET /chat/history) render oldest-first, so the newest-first
+        # page has to be reversed before it is handed back.
+        newest_first = [
+            {"role": "user", "content": "terceira"},
+            {"role": "user", "content": "segunda"},
+            {"role": "user", "content": "primeira"},
+        ]
+        result, _ = await self._run({"sessionId": "s1", "_id": "c1"}, newest_first)
+
+        self.assertEqual([m.content for m in result], ["primeira", "segunda", "terceira"])
+
 
 class ListConversationsTests(unittest.IsolatedAsyncioTestCase):
     async def test_projects_out_id_and_sorts_by_last_interaction_desc(self):

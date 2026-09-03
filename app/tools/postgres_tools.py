@@ -210,6 +210,7 @@ async def get_sales_summary(
         WHERE c.company_id = :empresa_id
           AND st.sale_date >= (CURRENT_DATE - CAST(:days_back AS INTEGER))
           AND st.status = 'COMPLETED'
+          AND si.status = 'SOLD'
           AND st.deleted_at IS NULL
           AND p.active = TRUE
           AND p.deleted_at IS NULL
@@ -259,6 +260,7 @@ async def get_daily_sales_series(
         WHERE c.company_id = :empresa_id
           AND st.sale_date >= (CURRENT_DATE - CAST(:days_back AS INTEGER))
           AND st.status = 'COMPLETED'
+          AND si.status = 'SOLD'
           AND st.deleted_at IS NULL
           AND p.product_id = ANY(:product_ids)
           AND p.active = TRUE
@@ -481,14 +483,37 @@ async def get_inventory_status(empresa_id: int, store_id: int | None = None) -> 
     return await _exec(sql, empresa_id=empresa_id, params=params)
 
 
-async def get_inventory_match(
+MAX_PRODUCT_NAME_CHARS = 80
+
+
+async def get_inventory_matches(
     empresa_id: int,
-    product_name: str,
+    product_names: list[str],
     store_id: int | None = None,
-) -> dict[str, Any] | None:
-    """Locates a product seen on the shelf within the authenticated tenant."""
+) -> dict[str, dict[str, Any]]:
+    """
+    Locates several shelf-detected products at once, within the authenticated
+    tenant. Returns {normalized name: match}, omitting names that match nothing.
+
+    One query for the whole list rather than one per name: the shelf
+    cross-check called the single-name lookup in a Python loop, and every
+    iteration was its own connection, its own `set_config` and its own
+    unindexable ILIKE scan — a photo with ten products cost eleven round
+    trips. The LATERAL subquery is the original single-name query verbatim,
+    run once per name by the database, so the per-name semantics are
+    unchanged: still LIMIT 1, still preferring an exact name match before
+    falling back to alphabetical order.
+    """
     if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
         raise ValueError("store_id must be a positive integer.")
+
+    normalized = list(dict.fromkeys(
+        name.strip()[:MAX_PRODUCT_NAME_CHARS].lower()
+        for name in product_names
+        if name and name.strip()
+    ))
+    if not normalized:
+        return {}
 
     store_filter = "AND i.store_id = :store_id" if store_id is not None else ""
     sql = f"""
@@ -507,43 +532,67 @@ async def get_inventory_match(
               AND rs.deleted_at IS NULL
               AND i.deleted_at IS NULL
               {store_filter}
+        ),
+        wanted AS (
+            SELECT n AS wanted_name FROM unnest(CAST(:names AS text[])) AS t(n)
         )
-        SELECT
-            p.product_id AS id,
-            p.name,
-            p.barcode,
-            COALESCE(SUM(ci.current_quantity), 0) AS quantity,
-            COALESCE(SUM(ci.minimum_quantity), 0) AS min_quantity,
-            CASE
-                WHEN COUNT(ci.batch_id) = 0 THEN 'SEM_INVENTARIO'
-                WHEN COALESCE(SUM(ci.current_quantity), 0) <= 0 THEN 'RUPTURA'
-                WHEN COALESCE(SUM(ci.current_quantity), 0) < COALESCE(SUM(ci.minimum_quantity), 0)
-                    THEN 'ABAIXO_MINIMO'
-                ELSE 'OK'
-            END AS status
-        FROM mottainai.product p
-        LEFT JOIN mottainai.batch b
-          ON b.product_id = p.product_id
-         AND b.active = TRUE
-         AND b.deleted_at IS NULL
-        LEFT JOIN company_inventory ci ON ci.batch_id = b.batch_id
-        WHERE p.active = TRUE
-          AND p.deleted_at IS NULL
-          AND LOWER(p.name) ILIKE LOWER(:name_like)
-        GROUP BY p.product_id, p.name, p.barcode
-        ORDER BY
-            CASE WHEN LOWER(p.name) = LOWER(:exact_name) THEN 0 ELSE 1 END,
-            p.name
-        LIMIT 1
+        SELECT w.wanted_name, m.*
+        FROM wanted w
+        CROSS JOIN LATERAL (
+            SELECT
+                p.product_id AS id,
+                p.name,
+                p.barcode,
+                COALESCE(SUM(ci.current_quantity), 0) AS quantity,
+                COALESCE(SUM(ci.minimum_quantity), 0) AS min_quantity,
+                CASE
+                    WHEN COUNT(ci.batch_id) = 0 THEN 'SEM_INVENTARIO'
+                    WHEN COALESCE(SUM(ci.current_quantity), 0) <= 0 THEN 'RUPTURA'
+                    WHEN COALESCE(SUM(ci.current_quantity), 0) < COALESCE(SUM(ci.minimum_quantity), 0)
+                        THEN 'ABAIXO_MINIMO'
+                    ELSE 'OK'
+                END AS status
+            FROM mottainai.product p
+            LEFT JOIN mottainai.batch b
+              ON b.product_id = p.product_id
+             AND b.active = TRUE
+             AND b.deleted_at IS NULL
+            LEFT JOIN company_inventory ci ON ci.batch_id = b.batch_id
+            WHERE p.active = TRUE
+              AND p.deleted_at IS NULL
+              AND LOWER(p.name) ILIKE '%' || w.wanted_name || '%'
+            GROUP BY p.product_id, p.name, p.barcode
+            ORDER BY
+                CASE WHEN LOWER(p.name) = w.wanted_name THEN 0 ELSE 1 END,
+                p.name
+            LIMIT 1
+        ) m
     """
-    params: dict[str, Any] = {
-        "name_like": f"%{product_name[:80]}%",
-        "exact_name": product_name[:80],
-    }
+    params: dict[str, Any] = {"names": normalized}
     if store_id is not None:
         params["store_id"] = store_id
+
     rows = await _exec(sql, empresa_id=empresa_id, params=params)
-    return rows[0] if rows else None
+    matches: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        match = {k: v for k, v in row.items() if k != "wanted_name"}
+        matches[row["wanted_name"]] = match
+    return matches
+
+
+async def get_inventory_match(
+    empresa_id: int,
+    product_name: str,
+    store_id: int | None = None,
+) -> dict[str, Any] | None:
+    """
+    Locates a product seen on the shelf within the authenticated tenant.
+
+    Thin wrapper over get_inventory_matches so both paths share one SQL
+    definition and cannot drift apart.
+    """
+    matches = await get_inventory_matches(empresa_id, [product_name], store_id)
+    return next(iter(matches.values()), None)
 
 
 async def get_shelf_inventory_crosscheck(
@@ -552,6 +601,12 @@ async def get_shelf_inventory_crosscheck(
     detected_products: list[str],
 ) -> dict[str, list[dict[str, Any]]]:
     """Cross-checks detected products against v6 schema stock and alerts."""
+    # One query for every detected product instead of one per product. The
+    # loop still walks `detected_products` in order so `found` keeps the order
+    # the products were detected in; only the lookup moved out of it.
+    # `seen_names` stays keyed on the untruncated name, because the
+    # missing-product check below does substring matching against it.
+    matches = await get_inventory_matches(empresa_id, detected_products, store_id)
     found: list[dict[str, Any]] = []
     seen_names: set[str] = set()
     for product_name in detected_products:
@@ -559,7 +614,7 @@ async def get_shelf_inventory_crosscheck(
         if not normalized_name or normalized_name.lower() in seen_names:
             continue
         seen_names.add(normalized_name.lower())
-        match = await get_inventory_match(empresa_id, normalized_name, store_id)
+        match = matches.get(normalized_name[:MAX_PRODUCT_NAME_CHARS].lower())
         if match:
             found.append(match)
 

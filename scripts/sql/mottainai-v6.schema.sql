@@ -1947,6 +1947,20 @@ CREATE INDEX IF NOT EXISTS idx_promotion_item_product ON promotion_item(product_
 CREATE INDEX IF NOT EXISTS idx_customer_geofence_store ON customer_geofence(store_id) WHERE active = TRUE;
 CREATE INDEX IF NOT EXISTS idx_loyalty_transaction_account ON loyalty_transaction(loyalty_account_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_loyalty_redemption_account ON loyalty_redemption(loyalty_account_id, redeemed_at);
+
+-- Every tenant-scoped query in app/tools/postgres_tools.py reaches the company
+-- through retail_store (JOIN retail_store rs ... JOIN company c ON
+-- c.company_id = rs.company_id), and retail_store carried only its primary key
+-- and the CNPJ unique constraint — nothing on company_id. The same column is
+-- what the four RLS policies subselect on, so this index is also a
+-- prerequisite for enforcing RLS rather than leaving it decorative.
+CREATE INDEX IF NOT EXISTS idx_retail_store_company
+    ON retail_store(company_id) WHERE active = TRUE AND deleted_at IS NULL;
+
+-- get_daily_sales_series aggregates per product per day and now filters
+-- si.status = 'SOLD'; the partial index matches that predicate exactly.
+CREATE INDEX IF NOT EXISTS idx_sale_item_product_date
+    ON sale_item(product_id, sale_date) WHERE status = 'SOLD';
 -- ================= END 05_index.sql =================
 
 -- ================= BEGIN 06_triggers.sql =================

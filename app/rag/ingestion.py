@@ -96,11 +96,14 @@ async def ingest_document(
     `category` and `version` are required by the collection's $jsonSchema;
     when no category is given it is derived from `source`.
 
-    Raises DuplicateSlugError if `slug` already exists — rag_documents.slug
-    has a unique index (scripts/setup_mongo.py); relies on that DB-level
-    constraint rather than a check-then-insert, which would race under
-    concurrent uploads. Raises plain ValueError if `text` produces no
-    chunks (e.g. whitespace-only) or if `category` is outside the enum.
+    Raises DuplicateSlugError if this company already uses `slug` —
+    rag_documents has a unique index on (empresaId, slug)
+    (scripts/setup_mongo.py); relies on that DB-level constraint rather than a
+    check-then-insert, which would race under concurrent uploads. The index is
+    scoped to the company on purpose: it was global, so the first tenant to
+    claim an obvious slug blocked every other tenant from it. Raises plain
+    ValueError if `text` produces no chunks (e.g. whitespace-only) or if
+    `category` is outside the enum.
     """
     chunks_text = split_into_chunks(text)
     if not chunks_text:

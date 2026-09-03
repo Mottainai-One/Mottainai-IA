@@ -80,10 +80,11 @@ def get_vision_llm() -> ChatGoogleGenerativeAI:
 
 
 async def analyze_shelf(
+    *,
+    empresa_id: int,
     image_path: str | None = None,
     image_bytes: bytes | None = None,
     image_mime_type: str | None = None,
-    empresa_id: int = 1,
     usuario_id: int | None = None,
     store_id: int | None = None,
     session_id: str | None = None,
@@ -97,6 +98,13 @@ async def analyze_shelf(
       - image_bytes: image bytes (upload via API)
 
     Returns the analysis result + cross-check against Postgres inventory.
+
+    `empresa_id` is keyword-only and has no default on purpose: it scopes the
+    inventory cross-check and tags the persisted ai_results document, so a
+    forgotten argument would have silently analysed one company's shelf against
+    another's stock. It used to default to 1 — harmless while the single caller
+    passed it explicitly, and a cross-tenant leak the first time a script, tool
+    or test did not.
     """
     # 1. Encodes the image as base64
     if image_path:

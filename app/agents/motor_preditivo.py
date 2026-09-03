@@ -1,6 +1,11 @@
 """
-Predictive Engine Agent — autonomous, not reactive.
-Runs on event trigger OR schedule (does not wait for a user question).
+Predictive Engine Agent — forecasts demand and narrates the actions it
+would take.
+
+Reached two ways: POST /motor-preditivo/trigger (DONO only, outside the
+chat graph — interfaces/api/main.py) and the supervisor routing a DONO's
+forecast-shaped question to it (supervisor.py). There is no scheduler in
+this repository, so nothing runs it on its own clock.
 
 Sub-agents/capabilities:
   1. Demand Forecast (Postgres history + Open-Meteo external API)
@@ -8,9 +13,17 @@ Sub-agents/capabilities:
   3. Suggested Action Generation (flash promotion / transfer / donation / disposal)
   4. Restocking Pre-List
 
-Writes to: mottainai.alert and mottainai.suggested_action (Postgres).
-Pushes a webhook for CRITICAL alerts not yet notified (best-effort — see
+Reads Postgres; the only thing it writes to is the notification webhook for
+CRITICAL alerts not yet notified (best-effort — see
 app/notifications/alert_webhook.py; no-op if no webhook URL is configured).
+
+It does NOT write mottainai.alert or mottainai.suggested_action. This
+docstring used to claim it did, and that both mattered and misled: the
+suggested actions exist only as prose inside the answer, the alert table is
+populated by the seed alone, and nobody reading this file could tell.
+Agents in this project gather data and narrate — writes go through the
+dedicated role-gated endpoints (see app/agents/funcionario.py). Persisting
+the engine's output is a product decision, not a missing line of code.
 
 Note: SYSTEM_PROMPT and the operational context block fed to the LLM are
 deliberately kept in Portuguese, same as the other agents.

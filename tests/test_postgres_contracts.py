@@ -104,7 +104,13 @@ class PostgresSchemaContracts(unittest.IsolatedAsyncioTestCase):
 
         sql = execute.await_args.args[0]
         self.assertIn("si.sale_id = st.sale_id AND si.sale_date = st.sale_date", sql)
-        self.assertNotIn("si.status", sql)
+        # sale_item.status is an enum of SOLD/CANCELED/RETURNED, and the whole
+        # point of this test's name is that the summary counts only real sales.
+        # It used to assert the opposite (assertNotIn "si.status"), pinning the
+        # missing filter in place: cancelled and returned line items were summed
+        # into "top produtos" and into the demand forecast that reads this data.
+        # get_kpis and get_kpis_by_store already filtered it — these two did not.
+        self.assertIn("si.status = 'SOLD'", sql)
         self.assertIn("st.deleted_at IS NULL", sql)
         self.assertIn("p.barcode     AS barcode", sql)
         self.assertNotIn("p.sku", sql)
@@ -112,6 +118,18 @@ class PostgresSchemaContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(execute.await_args.kwargs["empresa_id"], 42)
         self.assertEqual(execute.await_args.kwargs["params"]["days_back"], 60)
         self.assertNotIn("store_id", execute.await_args.kwargs["params"])
+
+    async def test_daily_sales_series_counts_only_sold_line_items(self):
+        # This series is the demand forecast's only input
+        # (app/analytics/forecasting.py). Counting CANCELED/RETURNED items here
+        # inflates every prediction, silently and in the same direction.
+        with patch(
+            "app.tools.postgres_tools._exec",
+            new=AsyncMock(return_value=[]),
+        ) as execute:
+            await postgres_tools.get_daily_sales_series(42, [10], days_back=28)
+
+        self.assertIn("si.status = 'SOLD'", execute.await_args.args[0])
 
     async def test_sales_summary_binds_optional_store_filter(self):
         with patch(
@@ -198,6 +216,32 @@ class PostgresSchemaContracts(unittest.IsolatedAsyncioTestCase):
     async def test_inventory_query_rejects_invalid_store_id(self):
         with self.assertRaises(ValueError):
             await postgres_tools.get_inventory_status(42, store_id=0)
+
+    async def test_inventory_matches_resolves_the_whole_list_in_one_query(self):
+        # The shelf cross-check used to call the single-name lookup in a loop:
+        # one connection, one set_config and one unindexable ILIKE per detected
+        # product. The LATERAL subquery runs the same per-name query inside the
+        # database instead, so ten products cost one round trip, not eleven.
+        with patch(
+            "app.tools.postgres_tools._exec",
+            new=AsyncMock(return_value=[]),
+        ) as execute:
+            await postgres_tools.get_inventory_matches(42, ["Leite", "Pao", "Leite"])
+
+        execute.assert_awaited_once()
+        sql = execute.await_args.args[0]
+        self.assertIn("CROSS JOIN LATERAL", sql)
+        self.assertIn("unnest(CAST(:names AS text[]))", sql)
+        self.assertIn("LIMIT 1", sql)  # still one product per detected name
+        # de-duplicated and normalized before it reaches the database
+        self.assertEqual(execute.await_args.kwargs["params"]["names"], ["leite", "pao"])
+
+    async def test_inventory_matches_skips_the_query_when_nothing_was_detected(self):
+        with patch("app.tools.postgres_tools._exec", new=AsyncMock()) as execute:
+            result = await postgres_tools.get_inventory_matches(42, ["", "   "])
+
+        self.assertEqual(result, {})
+        execute.assert_not_awaited()
 
     async def test_inventory_match_uses_company_scoped_batches(self):
         with patch(
@@ -301,8 +345,8 @@ class ShelfInventoryContracts(unittest.IsolatedAsyncioTestCase):
         ]
         with (
             patch(
-                "app.tools.postgres_tools.get_inventory_match",
-                new=AsyncMock(return_value={"id": 1, "name": "Leite Integral"}),
+                "app.tools.postgres_tools.get_inventory_matches",
+                new=AsyncMock(return_value={"leite integral": {"id": 1, "name": "Leite Integral"}}),
             ),
             patch(
                 "app.tools.postgres_tools.get_inventory_status",
