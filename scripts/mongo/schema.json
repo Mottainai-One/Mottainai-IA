@@ -1,0 +1,1918 @@
+{
+  "agent_contexts": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "conversationId",
+          "agent",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "conversationId": {
+            "bsonType": "objectId"
+          },
+          "agent": {
+            "bsonType": "string"
+          },
+          "currentSkill": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "bsonType": "object"
+          },
+          "createdAt": {
+            "bsonType": "date"
+          },
+          "updatedAt": {
+            "bsonType": "date"
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ix_agent_contexts_updatedAt": {
+        "key": [
+          [
+            "updatedAt",
+            -1
+          ]
+        ]
+      },
+      "ux_agent_contexts_conversation_agent": {
+        "key": [
+          [
+            "conversationId",
+            1
+          ],
+          [
+            "agent",
+            1
+          ]
+        ],
+        "unique": true
+      }
+    }
+  },
+  "agent_executions": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "agent",
+          "status",
+          "startedAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "conversationId": {
+            "bsonType": [
+              "objectId",
+              "null"
+            ]
+          },
+          "agent": {
+            "bsonType": "string"
+          },
+          "skill": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "tools": {
+            "bsonType": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "bsonType": "string"
+            }
+          },
+          "executionFlow": {
+            "bsonType": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "bsonType": "string"
+            }
+          },
+          "status": {
+            "enum": [
+              "running",
+              "completed",
+              "error"
+            ]
+          },
+          "latency": {
+            "bsonType": [
+              "double",
+              "null"
+            ]
+          },
+          "startedAt": {
+            "bsonType": "date"
+          },
+          "finishedAt": {
+            "bsonType": [
+              "date",
+              "null"
+            ]
+          },
+          "error": {
+            "bsonType": [
+              "object",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "agent_1_status_1": {
+        "key": [
+          [
+            "agent",
+            1
+          ],
+          [
+            "status",
+            1
+          ]
+        ]
+      },
+      "empresaId_1_createdAt_-1": {
+        "key": [
+          [
+            "empresaId",
+            1
+          ],
+          [
+            "createdAt",
+            -1
+          ]
+        ]
+      },
+      "ix_agent_executions_agent_status_startedAt": {
+        "key": [
+          [
+            "agent",
+            1
+          ],
+          [
+            "status",
+            1
+          ],
+          [
+            "startedAt",
+            -1
+          ]
+        ]
+      },
+      "ix_agent_executions_conversation_startedAt": {
+        "key": [
+          [
+            "conversationId",
+            1
+          ],
+          [
+            "startedAt",
+            -1
+          ]
+        ]
+      }
+    }
+  },
+  "agent_fallbacks": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "sourceAgent",
+          "fallbackAgent",
+          "reason",
+          "active",
+          "createdAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "sourceAgent": {
+            "bsonType": "string"
+          },
+          "fallbackAgent": {
+            "bsonType": "string"
+          },
+          "reason": {
+            "bsonType": "string"
+          },
+          "active": {
+            "bsonType": "bool"
+          },
+          "createdAt": {
+            "bsonType": "date"
+          },
+          "updatedAt": {
+            "bsonType": [
+              "date",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ux_agent_fallbacks_source_fallback": {
+        "key": [
+          [
+            "sourceAgent",
+            1
+          ],
+          [
+            "fallbackAgent",
+            1
+          ]
+        ],
+        "unique": true
+      }
+    }
+  },
+  "agent_policies": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "agent",
+          "scope",
+          "active",
+          "createdAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "agent": {
+            "bsonType": "string"
+          },
+          "scope": {
+            "bsonType": "object",
+            "required": [
+              "allowedDomains"
+            ],
+            "properties": {
+              "allowedDomains": {
+                "bsonType": "array",
+                "items": {
+                  "bsonType": "string"
+                }
+              },
+              "forbiddenDomains": {
+                "bsonType": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "bsonType": "string"
+                }
+              }
+            }
+          },
+          "canUseRag": {
+            "bsonType": [
+              "bool",
+              "null"
+            ]
+          },
+          "canUseTools": {
+            "bsonType": [
+              "bool",
+              "null"
+            ]
+          },
+          "canReadMemory": {
+            "bsonType": [
+              "bool",
+              "null"
+            ]
+          },
+          "canWriteMemory": {
+            "bsonType": [
+              "bool",
+              "null"
+            ]
+          },
+          "active": {
+            "bsonType": "bool"
+          },
+          "createdAt": {
+            "bsonType": "date"
+          },
+          "updatedAt": {
+            "bsonType": [
+              "date",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ux_agent_policies_agent": {
+        "key": [
+          [
+            "agent",
+            1
+          ]
+        ],
+        "unique": true
+      }
+    }
+  },
+  "ai_results": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "conversationId",
+          "agent",
+          "type",
+          "result",
+          "createdAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "conversationId": {
+            "bsonType": "objectId"
+          },
+          "agent": {
+            "bsonType": "string"
+          },
+          "skill": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "enum": [
+              "recommendation",
+              "prediction",
+              "analysis",
+              "summary"
+            ]
+          },
+          "result": {
+            "bsonType": "object"
+          },
+          "createdAt": {
+            "bsonType": "date"
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ix_ai_results_agent_type_createdAt": {
+        "key": [
+          [
+            "agent",
+            1
+          ],
+          [
+            "type",
+            1
+          ],
+          [
+            "createdAt",
+            -1
+          ]
+        ]
+      },
+      "ix_ai_results_conversation_createdAt": {
+        "key": [
+          [
+            "conversationId",
+            1
+          ],
+          [
+            "createdAt",
+            -1
+          ]
+        ]
+      }
+    }
+  },
+  "cache_queries": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "queryHash",
+          "response",
+          "expiresAt",
+          "createdAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "queryHash": {
+            "bsonType": "string"
+          },
+          "response": {
+            "bsonType": "string"
+          },
+          "expiresAt": {
+            "bsonType": "date"
+          },
+          "createdAt": {
+            "bsonType": "date"
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ix_cache_queries_expiresAt": {
+        "key": [
+          [
+            "expiresAt",
+            1
+          ]
+        ]
+      },
+      "ux_cache_queries_queryHash": {
+        "key": [
+          [
+            "queryHash",
+            1
+          ]
+        ],
+        "unique": true
+      }
+    }
+  },
+  "conversation_events": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "conversationId",
+          "type",
+          "createdAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "conversationId": {
+            "bsonType": "objectId"
+          },
+          "type": {
+            "enum": [
+              "conversation_started",
+              "intent_detected",
+              "agent_selected",
+              "tool_called",
+              "fallback_used",
+              "response_sent",
+              "conversation_closed",
+              "error"
+            ]
+          },
+          "payload": {
+            "bsonType": [
+              "object",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "bsonType": "date"
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ix_conversation_events_conversation_createdAt": {
+        "key": [
+          [
+            "conversationId",
+            1
+          ],
+          [
+            "createdAt",
+            1
+          ]
+        ]
+      },
+      "ix_conversation_events_type_createdAt": {
+        "key": [
+          [
+            "type",
+            1
+          ],
+          [
+            "createdAt",
+            -1
+          ]
+        ]
+      }
+    }
+  },
+  "conversations": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "sessionId",
+          "empresaId",
+          "usuarioId",
+          "agent",
+          "status",
+          "startedAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "sessionId": {
+            "bsonType": "string"
+          },
+          "empresaId": {
+            "bsonType": "int"
+          },
+          "usuarioId": {
+            "bsonType": "int"
+          },
+          "agent": {
+            "bsonType": "string"
+          },
+          "skill": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "bsonType": "string"
+          },
+          "title": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "startedAt": {
+            "bsonType": "date"
+          },
+          "lastInteraction": {
+            "bsonType": [
+              "date",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "empresaId_1_status_1": {
+        "key": [
+          [
+            "empresaId",
+            1
+          ],
+          [
+            "status",
+            1
+          ]
+        ]
+      },
+      "ix_conversations_empresa_usuario_lastInteraction": {
+        "key": [
+          [
+            "empresaId",
+            1
+          ],
+          [
+            "usuarioId",
+            1
+          ],
+          [
+            "lastInteraction",
+            -1
+          ]
+        ],
+        "supersedes": [
+          "empresaId_1_usuarioId_1_lastInteraction_-1"
+        ]
+      },
+      "ix_conversations_agent_status": {
+        "key": [
+          [
+            "agent",
+            1
+          ],
+          [
+            "status",
+            1
+          ]
+        ]
+      },
+      "ix_conversations_empresa_usuario_startedAt": {
+        "key": [
+          [
+            "empresaId",
+            1
+          ],
+          [
+            "usuarioId",
+            1
+          ],
+          [
+            "startedAt",
+            -1
+          ]
+        ]
+      },
+      "ix_conversations_lastInteraction": {
+        "key": [
+          [
+            "lastInteraction",
+            -1
+          ]
+        ]
+      },
+      "ux_conversations_sessionId": {
+        "key": [
+          [
+            "sessionId",
+            1
+          ]
+        ],
+        "unique": true
+      }
+    }
+  },
+  "embeddings_cache": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "hash",
+          "embedding",
+          "createdAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "hash": {
+            "bsonType": "string"
+          },
+          "embedding": {
+            "bsonType": "array",
+            "items": {
+              "bsonType": "double"
+            }
+          },
+          "createdAt": {
+            "bsonType": "date"
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ux_embeddings_cache_hash": {
+        "key": [
+          [
+            "hash",
+            1
+          ]
+        ],
+        "unique": true
+      }
+    }
+  },
+  "feedbacks": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "messageId",
+          "usuarioId",
+          "rating",
+          "createdAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "messageId": {
+            "bsonType": "objectId"
+          },
+          "usuarioId": {
+            "bsonType": "int"
+          },
+          "agent": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "rating": {
+            "enum": [
+              "positive",
+              "negative",
+              "neutral"
+            ]
+          },
+          "comment": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "bsonType": "date"
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ix_feedbacks_messageId": {
+        "key": [
+          [
+            "messageId",
+            1
+          ]
+        ]
+      },
+      "ix_feedbacks_usuario_createdAt": {
+        "key": [
+          [
+            "usuarioId",
+            1
+          ],
+          [
+            "createdAt",
+            -1
+          ]
+        ]
+      }
+    }
+  },
+  "intent_catalog": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "key",
+          "agent",
+          "active",
+          "createdAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "key": {
+            "bsonType": "string"
+          },
+          "label": {
+            "bsonType": "string"
+          },
+          "description": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "agent": {
+            "bsonType": "string"
+          },
+          "skill": {
+            "bsonType": "string"
+          },
+          "examples": {
+            "bsonType": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "bsonType": "string"
+            }
+          },
+          "confidenceThreshold": {
+            "bsonType": [
+              "double",
+              "null"
+            ]
+          },
+          "active": {
+            "bsonType": "bool"
+          },
+          "createdAt": {
+            "bsonType": "date"
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ix_intent_catalog_agent_active": {
+        "key": [
+          [
+            "agent",
+            1
+          ],
+          [
+            "active",
+            1
+          ]
+        ]
+      },
+      "ix_intent_catalog_skill": {
+        "key": [
+          [
+            "skill",
+            1
+          ]
+        ]
+      },
+      "ux_intent_catalog_key": {
+        "key": [
+          [
+            "key",
+            1
+          ]
+        ],
+        "unique": true
+      }
+    }
+  },
+  "memories": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "usuarioId",
+          "empresaId",
+          "updatedAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "usuarioId": {
+            "bsonType": "int"
+          },
+          "empresaId": {
+            "bsonType": "int"
+          },
+          "preferences": {
+            "bsonType": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "bsonType": "string"
+            }
+          },
+          "facts": {
+            "bsonType": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "bsonType": "string"
+            }
+          },
+          "lastAgent": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "lastSkill": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "bsonType": "date"
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ix_memories_updatedAt": {
+        "key": [
+          [
+            "updatedAt",
+            -1
+          ]
+        ]
+      },
+      "ux_memories_empresa_usuario": {
+        "key": [
+          [
+            "empresaId",
+            1
+          ],
+          [
+            "usuarioId",
+            1
+          ]
+        ],
+        "unique": true
+      }
+    }
+  },
+  "messages": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "conversationId",
+          "role",
+          "content",
+          "createdAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "conversationId": {
+            "bsonType": "objectId"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "assistant",
+              "system",
+              "tool"
+            ]
+          },
+          "content": {
+            "bsonType": "string"
+          },
+          "agent": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "skill": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "sources": {
+            "bsonType": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "bsonType": "object",
+              "required": [
+                "type",
+                "ref"
+              ],
+              "properties": {
+                "type": {
+                  "enum": [
+                    "rag",
+                    "sql",
+                    "api",
+                    "manual",
+                    "url",
+                    "other"
+                  ]
+                },
+                "ref": {
+                  "bsonType": "string"
+                },
+                "score": {
+                  "bsonType": [
+                    "double",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "inputTokens": {
+            "bsonType": [
+              "int",
+              "long",
+              "null"
+            ]
+          },
+          "outputTokens": {
+            "bsonType": [
+              "int",
+              "long",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "bsonType": "date"
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ix_messages_agent_skill_createdAt": {
+        "key": [
+          [
+            "agent",
+            1
+          ],
+          [
+            "skill",
+            1
+          ],
+          [
+            "createdAt",
+            -1
+          ]
+        ]
+      },
+      "ix_messages_conversation_createdAt": {
+        "key": [
+          [
+            "conversationId",
+            1
+          ],
+          [
+            "createdAt",
+            1
+          ]
+        ]
+      }
+    }
+  },
+  "metrics": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "agent",
+          "createdAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "conversationId": {
+            "bsonType": [
+              "objectId",
+              "null"
+            ]
+          },
+          "agent": {
+            "bsonType": "string"
+          },
+          "skill": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "inputTokens": {
+            "bsonType": [
+              "int",
+              "long",
+              "null"
+            ]
+          },
+          "outputTokens": {
+            "bsonType": [
+              "int",
+              "long",
+              "null"
+            ]
+          },
+          "latency": {
+            "bsonType": [
+              "double",
+              "null"
+            ]
+          },
+          "estimatedCost": {
+            "bsonType": [
+              "double",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "bsonType": "date"
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "agent_1_createdAt_-1": {
+        "key": [
+          [
+            "agent",
+            1
+          ],
+          [
+            "createdAt",
+            -1
+          ]
+        ]
+      },
+      "createdAt_-1": {
+        "key": [
+          [
+            "createdAt",
+            -1
+          ]
+        ]
+      },
+      "ix_metrics_empresa_createdAt": {
+        "key": [
+          [
+            "empresaId",
+            1
+          ],
+          [
+            "createdAt",
+            -1
+          ]
+        ],
+        "supersedes": [
+          "empresaId_1_createdAt_-1"
+        ]
+      },
+      "ix_metrics_agent_skill_createdAt": {
+        "key": [
+          [
+            "agent",
+            1
+          ],
+          [
+            "skill",
+            1
+          ],
+          [
+            "createdAt",
+            -1
+          ]
+        ]
+      },
+      "ix_metrics_conversation_createdAt": {
+        "key": [
+          [
+            "conversationId",
+            1
+          ],
+          [
+            "createdAt",
+            -1
+          ]
+        ]
+      }
+    }
+  },
+  "prompt_evaluations": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "promptVersion",
+          "agent",
+          "score",
+          "createdAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "promptVersion": {
+            "bsonType": "string"
+          },
+          "agent": {
+            "bsonType": "string"
+          },
+          "skill": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "score": {
+            "bsonType": "double"
+          },
+          "feedback": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "evaluator": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "bsonType": "date"
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ix_prompt_evaluations_empresa_createdAt": {
+        "key": [
+          [
+            "empresaId",
+            1
+          ],
+          [
+            "createdAt",
+            -1
+          ]
+        ],
+        "supersedes": [
+          "empresaId_1_createdAt_-1"
+        ]
+      },
+      "ix_prompt_evaluations_createdAt": {
+        "key": [
+          [
+            "createdAt",
+            -1
+          ]
+        ]
+      },
+      "ix_prompt_evaluations_prompt_agent": {
+        "key": [
+          [
+            "promptVersion",
+            1
+          ],
+          [
+            "agent",
+            1
+          ]
+        ]
+      }
+    }
+  },
+  "prompts": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "agent",
+          "version",
+          "systemPrompt",
+          "model",
+          "active",
+          "createdAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "agent": {
+            "bsonType": "string"
+          },
+          "skill": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "bsonType": "string"
+          },
+          "systemPrompt": {
+            "bsonType": "string"
+          },
+          "temperature": {
+            "bsonType": [
+              "double",
+              "null"
+            ]
+          },
+          "model": {
+            "bsonType": "string"
+          },
+          "active": {
+            "bsonType": "bool"
+          },
+          "createdAt": {
+            "bsonType": "date"
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ix_prompts_agent_skill_active": {
+        "key": [
+          [
+            "agent",
+            1
+          ],
+          [
+            "skill",
+            1
+          ],
+          [
+            "active",
+            1
+          ]
+        ]
+      },
+      "ux_prompts_agent_skill_version": {
+        "key": [
+          [
+            "agent",
+            1
+          ],
+          [
+            "skill",
+            1
+          ],
+          [
+            "version",
+            1
+          ]
+        ],
+        "unique": true
+      }
+    }
+  },
+  "rag_chunks": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "documentId",
+          "chunk",
+          "text"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "documentId": {
+            "bsonType": "objectId"
+          },
+          "chunk": {
+            "bsonType": "int"
+          },
+          "text": {
+            "bsonType": "string"
+          },
+          "embedding": {
+            "bsonType": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "bsonType": "double"
+            }
+          },
+          "metadata": {
+            "bsonType": [
+              "object",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "documentId_1": {
+        "key": [
+          [
+            "documentId",
+            1
+          ]
+        ]
+      },
+      "documentId_1_chunk_1": {
+        "key": [
+          [
+            "documentId",
+            1
+          ],
+          [
+            "chunk",
+            1
+          ]
+        ]
+      },
+      "ux_rag_chunks_document_chunk": {
+        "key": [
+          [
+            "documentId",
+            1
+          ],
+          [
+            "chunk",
+            1
+          ]
+        ],
+        "unique": true
+      }
+    }
+  },
+  "rag_documents": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "empresaId",
+          "title",
+          "category",
+          "version",
+          "createdAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "empresaId": {
+            "bsonType": "int"
+          },
+          "title": {
+            "bsonType": "string"
+          },
+          "category": {
+            "enum": [
+              "MANUAL",
+              "FAQ",
+              "PROCEDIMENTO",
+              "TREINAMENTO",
+              "POLITICA"
+            ]
+          },
+          "version": {
+            "bsonType": "string"
+          },
+          "metadata": {
+            "bsonType": [
+              "object",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "bsonType": "date"
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "empresaId_1": {
+        "key": [
+          [
+            "empresaId",
+            1
+          ]
+        ]
+      },
+      "ux_rag_documents_empresa_slug": {
+        "key": [
+          [
+            "empresaId",
+            1
+          ],
+          [
+            "slug",
+            1
+          ]
+        ],
+        "unique": true,
+        "supersedes": [
+          "empresaId_1_slug_1"
+        ]
+      },
+      "ix_rag_documents_empresa_category_createdAt": {
+        "key": [
+          [
+            "empresaId",
+            1
+          ],
+          [
+            "category",
+            1
+          ],
+          [
+            "createdAt",
+            -1
+          ]
+        ]
+      },
+      "tx_rag_documents_title": {
+        "key": [
+          [
+            "title",
+            "text"
+          ]
+        ]
+      },
+      "ux_rag_documents_empresa_title_version": {
+        "key": [
+          [
+            "empresaId",
+            1
+          ],
+          [
+            "title",
+            1
+          ],
+          [
+            "version",
+            1
+          ]
+        ],
+        "unique": true
+      }
+    }
+  },
+  "response_explanations": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "messageId",
+          "agent",
+          "explanation",
+          "createdAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "messageId": {
+            "bsonType": "objectId"
+          },
+          "agent": {
+            "bsonType": "string"
+          },
+          "skill": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "explanation": {
+            "bsonType": "string"
+          },
+          "sources": {
+            "bsonType": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "bsonType": "string"
+            }
+          },
+          "createdAt": {
+            "bsonType": "date"
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ix_response_explanations_agent_createdAt": {
+        "key": [
+          [
+            "agent",
+            1
+          ],
+          [
+            "createdAt",
+            -1
+          ]
+        ]
+      },
+      "ux_response_explanations_messageId": {
+        "key": [
+          [
+            "messageId",
+            1
+          ]
+        ],
+        "unique": true
+      }
+    }
+  },
+  "routing_logs": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "conversationId",
+          "intent",
+          "selectedAgent",
+          "createdAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "conversationId": {
+            "bsonType": "objectId"
+          },
+          "intent": {
+            "bsonType": "string"
+          },
+          "selectedAgent": {
+            "bsonType": "string"
+          },
+          "selectedSkill": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "confidence": {
+            "bsonType": [
+              "double",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "bsonType": "date"
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ix_routing_logs_conversation_createdAt": {
+        "key": [
+          [
+            "conversationId",
+            1
+          ],
+          [
+            "createdAt",
+            -1
+          ]
+        ]
+      },
+      "ix_routing_logs_intent_createdAt": {
+        "key": [
+          [
+            "intent",
+            1
+          ],
+          [
+            "createdAt",
+            -1
+          ]
+        ]
+      }
+    }
+  },
+  "tool_permissions": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "agent",
+          "tool",
+          "active",
+          "createdAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "agent": {
+            "bsonType": "string"
+          },
+          "tool": {
+            "bsonType": "string"
+          },
+          "action": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "canExecute": {
+            "bsonType": "bool"
+          },
+          "canRead": {
+            "bsonType": "bool"
+          },
+          "active": {
+            "bsonType": "bool"
+          },
+          "createdAt": {
+            "bsonType": "date"
+          },
+          "updatedAt": {
+            "bsonType": [
+              "date",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ux_tool_permissions_agent_tool": {
+        "key": [
+          [
+            "agent",
+            1
+          ],
+          [
+            "tool",
+            1
+          ]
+        ],
+        "unique": true
+      }
+    }
+  },
+  "tool_runs": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "conversationId",
+          "agent",
+          "tool",
+          "status",
+          "startedAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "conversationId": {
+            "bsonType": "objectId"
+          },
+          "agent": {
+            "bsonType": "string"
+          },
+          "skill": {
+            "bsonType": [
+              "string",
+              "null"
+            ]
+          },
+          "tool": {
+            "bsonType": "string"
+          },
+          "input": {
+            "bsonType": [
+              "object",
+              "null"
+            ]
+          },
+          "output": {
+            "bsonType": [
+              "object",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "running",
+              "success",
+              "error"
+            ]
+          },
+          "latency": {
+            "bsonType": [
+              "double",
+              "null"
+            ]
+          },
+          "error": {
+            "bsonType": [
+              "object",
+              "null"
+            ]
+          },
+          "startedAt": {
+            "bsonType": "date"
+          },
+          "finishedAt": {
+            "bsonType": [
+              "date",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ix_tool_runs_agent_tool_startedAt": {
+        "key": [
+          [
+            "agent",
+            1
+          ],
+          [
+            "tool",
+            1
+          ],
+          [
+            "startedAt",
+            -1
+          ]
+        ]
+      },
+      "ix_tool_runs_conversation_startedAt": {
+        "key": [
+          [
+            "conversationId",
+            1
+          ],
+          [
+            "startedAt",
+            -1
+          ]
+        ]
+      },
+      "ix_tool_runs_status": {
+        "key": [
+          [
+            "status",
+            1
+          ]
+        ]
+      }
+    }
+  }
+}

@@ -2,11 +2,26 @@
 """
 Mottainai — Setup MongoDB.
 
-Cria coleções e índices. Dados demonstrativos só são incluídos com --seed-demo.
-Uso: python scripts/setup_mongo.py [--seed-demo]
+Aplica scripts/mongo/schema.json: coleções, validadores $jsonSchema e índices.
+Dados demonstrativos só são incluídos com --seed-demo.
+
+Uso:
+  python scripts/setup_mongo.py              # cria/atualiza o schema
+  python scripts/setup_mongo.py --check      # só compara e falha se divergir
+  python scripts/setup_mongo.py --seed-demo  # + dados de demonstração
+
+Por que o schema mora num JSON e não neste arquivo: este script já tinha
+divergido do banco real — criava 7 coleções sem validador nenhum, enquanto o
+banco em uso tem 22 coleções, todas com $jsonSchema. Um ambiente novo montado
+por aqui não reproduzia a produção, e a classe de bug que os validadores pegam
+(documento fora do schema, aceito por qualquer teste mockado, rejeitado com 500
+pelo banco real) já derrubou quatro funcionalidades. Com o schema declarado num
+arquivo diffável, a divergência vira uma linha de diff em vez de uma surpresa —
+e `--check` transforma isso em algo que o CI consegue verificar.
 """
 import argparse
 import asyncio
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,52 +44,96 @@ def utcnow():
     return datetime.now(timezone.utc)
 
 
+SCHEMA_PATH = ROOT / "scripts" / "mongo" / "schema.json"
 INDEX_OPTIONS_CONFLICT = 85
 
 
-async def _ensure_index(collection, keys, *, unique: bool = False) -> None:
+def load_schema() -> dict:
+    return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+
+def _index_keys(spec: dict) -> list[tuple]:
+    """JSON só tem listas; o driver exige tuplas em cada par (campo, direção)."""
+    return [(field, direction) for field, direction in spec["key"]]
+
+
+async def _apply_validator(db, name: str, definition: dict, existing: set[str]) -> str:
     """
-    Creates an index, tolerating one that already covers the same keys under a
-    different name.
-
-    Mongo raises IndexOptionsConflict (85) when an equivalent index exists with
-    another name, and that aborted the whole script: this database was
-    provisioned outside this repo (its indexes are named ix_*/ux_*, and it
-    carries $jsonSchema validators this script never creates), so setup died on
-    the very first index — conversations.sessionId vs ux_conversations_sessionId
-    — and never reached the ones after it. A setup script that only works on a
-    virgin database cannot add an index to an existing one, which is exactly
-    what it is for. The conflict is reported rather than swallowed, because the
-    divergence itself is worth seeing.
+    Cria a coleção com o validador, ou aplica o validador via collMod se ela já
+    existir. `create` só aceita validador na criação, então atualizar um schema
+    de coleção existente exige collMod — é o que faz este script funcionar tanto
+    num banco vazio quanto num que já está em uso.
     """
-    try:
-        await collection.create_index(keys, unique=unique)
-    except OperationFailure as exc:
-        if exc.code != INDEX_OPTIONS_CONFLICT:
-            raise
-        print(f"[mongo-setup] {collection.name}: já existe índice equivalente a {keys} "
-              f"com outro nome — mantido ({exc.details.get('errmsg', '')})")
+    options = {k: v for k, v in definition.items() if k != "indexes"}
+    if not options:
+        return "sem validador"
+    if name not in existing:
+        await db.create_collection(name, **options)
+        return "coleção criada"
+    await db.command({"collMod": name, **options})
+    return "validador atualizado"
 
 
-async def _replace_index(collection, *, drop: str, keys: list, unique: bool = False) -> None:
+async def _apply_indexes(db, name: str, indexes: dict) -> list[str]:
+    notes = []
+    for index_name, spec in indexes.items():
+        for stale in spec.get("supersedes", []):
+            try:
+                await db[name].drop_index(stale)
+                notes.append(f"índice obsoleto removido: {stale}")
+            except Exception:
+                pass  # nunca existiu, ou já foi removido numa execução anterior
+        try:
+            await db[name].create_index(
+                _index_keys(spec), name=index_name, unique=spec.get("unique", False),
+            )
+        except OperationFailure as exc:
+            if exc.code != INDEX_OPTIONS_CONFLICT:
+                raise
+            notes.append(f"{index_name}: já existe índice equivalente com outro nome — mantido")
+    return notes
+
+
+async def apply_schema(db, schema: dict) -> None:
+    existing = set(await db.list_collection_names())
+    for name, definition in schema.items():
+        status = await _apply_validator(db, name, definition, existing)
+        notes = await _apply_indexes(db, name, definition.get("indexes", {}))
+        print(f"[mongo-setup] {name:24} {status}")
+        for note in notes:
+            print(f"[mongo-setup]     - {note}")
+
+
+async def check_schema(db, schema: dict) -> list[str]:
     """
-    Creates `keys`, dropping the superseded index `drop` first if it is there.
+    Compara o banco com o schema declarado e devolve as divergências.
 
-    This script is re-run against databases that already exist, so an index
-    whose definition changed has to be replaced rather than just created:
-    create_index() on the same field with different options is not an update.
-    Dropping an index that was never created is not an error worth failing the
-    whole setup over, so a missing one is ignored.
+    Só reporta o que o schema exige e o banco não tem. Uma coleção ou índice a
+    mais no banco não é erro — pode ser trabalho em andamento — mas um campo
+    obrigatório ou índice ausente significa que este ambiente aceita documento
+    que a produção rejeita, que é exatamente a divergência a evitar.
     """
-    try:
-        await collection.drop_index(drop)
-        print(f"[mongo-setup] índice obsoleto removido: {collection.name}.{drop}")
-    except Exception:
-        pass  # never existed, or already replaced by a previous run
-    await _ensure_index(collection, keys, unique=unique)
+    drift: list[str] = []
+    existing = set(await db.list_collection_names())
+    for name, definition in schema.items():
+        if name not in existing:
+            drift.append(f"coleção ausente: {name}")
+            continue
+        if "validator" in definition:
+            live = None
+            cursor = await db.list_collections(filter={"name": name})
+            async for info in cursor:
+                live = info.get("options", {}).get("validator")
+            if live != definition["validator"]:
+                drift.append(f"validador diferente: {name}")
+        live_indexes = set(await db[name].index_information())
+        for index_name in definition.get("indexes", {}):
+            if index_name not in live_indexes:
+                drift.append(f"índice ausente: {name}.{index_name}")
+    return drift
 
 
-async def setup(seed_demo: bool = False):
+async def setup(seed_demo: bool = False, check_only: bool = False):
     print("[mongo-setup] Conectando ao MongoDB...")
     client = AsyncIOMotorClient(MONGO_URI)
     db = client[MONGO_DB]
@@ -88,60 +147,23 @@ async def setup(seed_demo: bool = False):
         print("  Windows: .\\scripts\\windows\\Start-Mongo.ps1")
         sys.exit(1)
 
-    # ──────────────────────────────────────────────
-    # 1. Índices
-    # ──────────────────────────────────────────────
-    print("[mongo-setup] Criando índices...")
+    schema = load_schema()
 
-    await _ensure_index(db.conversations, "sessionId", unique=True)
-    await _ensure_index(db.conversations, [("empresaId", 1), ("status", 1)])
-    # list_conversations() filters {empresaId, usuarioId} and sorts by
-    # lastInteraction desc; neither existing index covers that, so it was a
-    # collection scan plus an in-memory sort on every call.
-    await _ensure_index(db.conversations, 
-        [("empresaId", 1), ("usuarioId", 1), ("lastInteraction", -1)]
-    )
+    if check_only:
+        drift = await check_schema(db, schema)
+        if drift:
+            print(f"[mongo-setup] {len(drift)} divergência(s) entre o banco e scripts/mongo/schema.json:")
+            for item in drift:
+                print(f"  - {item}")
+            client.close()
+            sys.exit(1)
+        print(f"[mongo-setup] Banco em dia com o schema ({len(schema)} coleções).")
+        client.close()
+        return
 
-    await _ensure_index(db.messages, [("conversationId", 1), ("createdAt", 1)])
+    print(f"[mongo-setup] Aplicando schema ({len(schema)} coleções)...")
+    await apply_schema(db, schema)
 
-    await _ensure_index(db.memories, [("empresaId", 1), ("usuarioId", 1)], unique=True)
-
-    await _ensure_index(db.metrics, [("createdAt", -1)])
-    await _ensure_index(db.metrics, [("agent", 1), ("createdAt", -1)])
-    # get_metrics_summary() reads {empresaId, createdAt >= since}; the two
-    # indexes above are led by createdAt and agent, so neither narrows by
-    # tenant and the summary scanned every company's metrics to build one
-    # company's report.
-    await _ensure_index(db.metrics, [("empresaId", 1), ("createdAt", -1)])
-
-    await _ensure_index(db.agent_executions, [("empresaId", 1), ("createdAt", -1)])
-    await _ensure_index(db.agent_executions, [("agent", 1), ("status", 1)])
-
-    await _ensure_index(db.rag_documents, [("empresaId", 1)])
-    # Unique per company, not globally. A global unique index made one
-    # company's slug block every other company's: "politica-troca-devolucao"
-    # is the slug everyone reaches for, and the second tenant to upload it got
-    # a 409 telling them a document they cannot see already exists. Scoping the
-    # constraint to empresaId keeps slugs unique where they are actually
-    # resolved (always together with the tenant) and stops one tenant's
-    # namespace from leaking into another's.
-    await _replace_index(
-        db.rag_documents,
-        drop="slug_1",
-        keys=[("empresaId", 1), ("slug", 1)],
-        unique=True,
-    )
-
-    await _ensure_index(db.rag_chunks, [("documentId", 1)])
-    await _ensure_index(db.rag_chunks, [("documentId", 1), ("chunk", 1)])
-
-    # The Judge writes one document here per evaluated answer and the
-    # Governance agent counts them by {empresaId, createdAt, score}; the
-    # collection had no index at all, so that count scanned everything the
-    # Judge had ever written, for every company.
-    await _ensure_index(db.prompt_evaluations, [("empresaId", 1), ("createdAt", -1)])
-
-    print("[mongo-setup] Índices criados!")
 
     # ──────────────────────────────────────────────
     # 2. Seed: documentos RAG
@@ -267,8 +289,7 @@ async def setup(seed_demo: bool = False):
     print("=== MongoDB pronto! ===")
     print("  URI: configurada")
     print(f"  DB:  {MONGO_DB}")
-    print("  Coleções: conversations, messages, memories, metrics,")
-    print("            agent_executions, rag_documents, rag_chunks")
+    print(f"  Coleções: {len(load_schema())} (ver scripts/mongo/schema.json)")
     print("")
     print("Próximo passo: python scripts/generate_embeddings.py")
 
@@ -282,5 +303,10 @@ if __name__ == "__main__":
         action="store_true",
         help="inclui documentos RAG e memória de demonstração em um MongoDB local vazio",
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="não altera nada: compara o banco com scripts/mongo/schema.json e sai com 1 se divergir",
+    )
     args = parser.parse_args()
-    asyncio.run(setup(seed_demo=args.seed_demo))
+    asyncio.run(setup(seed_demo=args.seed_demo, check_only=args.check))
