@@ -16,6 +16,7 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import OperationFailure
 
 from app.config import get_settings
 
@@ -26,6 +27,51 @@ MONGO_DB = settings.mongo_db
 
 def utcnow():
     return datetime.now(timezone.utc)
+
+
+INDEX_OPTIONS_CONFLICT = 85
+
+
+async def _ensure_index(collection, keys, *, unique: bool = False) -> None:
+    """
+    Creates an index, tolerating one that already covers the same keys under a
+    different name.
+
+    Mongo raises IndexOptionsConflict (85) when an equivalent index exists with
+    another name, and that aborted the whole script: this database was
+    provisioned outside this repo (its indexes are named ix_*/ux_*, and it
+    carries $jsonSchema validators this script never creates), so setup died on
+    the very first index — conversations.sessionId vs ux_conversations_sessionId
+    — and never reached the ones after it. A setup script that only works on a
+    virgin database cannot add an index to an existing one, which is exactly
+    what it is for. The conflict is reported rather than swallowed, because the
+    divergence itself is worth seeing.
+    """
+    try:
+        await collection.create_index(keys, unique=unique)
+    except OperationFailure as exc:
+        if exc.code != INDEX_OPTIONS_CONFLICT:
+            raise
+        print(f"[mongo-setup] {collection.name}: já existe índice equivalente a {keys} "
+              f"com outro nome — mantido ({exc.details.get('errmsg', '')})")
+
+
+async def _replace_index(collection, *, drop: str, keys: list, unique: bool = False) -> None:
+    """
+    Creates `keys`, dropping the superseded index `drop` first if it is there.
+
+    This script is re-run against databases that already exist, so an index
+    whose definition changed has to be replaced rather than just created:
+    create_index() on the same field with different options is not an update.
+    Dropping an index that was never created is not an error worth failing the
+    whole setup over, so a missing one is ignored.
+    """
+    try:
+        await collection.drop_index(drop)
+        print(f"[mongo-setup] índice obsoleto removido: {collection.name}.{drop}")
+    except Exception:
+        pass  # never existed, or already replaced by a previous run
+    await _ensure_index(collection, keys, unique=unique)
 
 
 async def setup(seed_demo: bool = False):
@@ -47,24 +93,53 @@ async def setup(seed_demo: bool = False):
     # ──────────────────────────────────────────────
     print("[mongo-setup] Criando índices...")
 
-    await db.conversations.create_index("sessionId", unique=True)
-    await db.conversations.create_index([("empresaId", 1), ("status", 1)])
+    await _ensure_index(db.conversations, "sessionId", unique=True)
+    await _ensure_index(db.conversations, [("empresaId", 1), ("status", 1)])
+    # list_conversations() filters {empresaId, usuarioId} and sorts by
+    # lastInteraction desc; neither existing index covers that, so it was a
+    # collection scan plus an in-memory sort on every call.
+    await _ensure_index(db.conversations, 
+        [("empresaId", 1), ("usuarioId", 1), ("lastInteraction", -1)]
+    )
 
-    await db.messages.create_index([("conversationId", 1), ("createdAt", 1)])
+    await _ensure_index(db.messages, [("conversationId", 1), ("createdAt", 1)])
 
-    await db.memories.create_index([("empresaId", 1), ("usuarioId", 1)], unique=True)
+    await _ensure_index(db.memories, [("empresaId", 1), ("usuarioId", 1)], unique=True)
 
-    await db.metrics.create_index([("createdAt", -1)])
-    await db.metrics.create_index([("agent", 1), ("createdAt", -1)])
+    await _ensure_index(db.metrics, [("createdAt", -1)])
+    await _ensure_index(db.metrics, [("agent", 1), ("createdAt", -1)])
+    # get_metrics_summary() reads {empresaId, createdAt >= since}; the two
+    # indexes above are led by createdAt and agent, so neither narrows by
+    # tenant and the summary scanned every company's metrics to build one
+    # company's report.
+    await _ensure_index(db.metrics, [("empresaId", 1), ("createdAt", -1)])
 
-    await db.agent_executions.create_index([("empresaId", 1), ("createdAt", -1)])
-    await db.agent_executions.create_index([("agent", 1), ("status", 1)])
+    await _ensure_index(db.agent_executions, [("empresaId", 1), ("createdAt", -1)])
+    await _ensure_index(db.agent_executions, [("agent", 1), ("status", 1)])
 
-    await db.rag_documents.create_index([("empresaId", 1)])
-    await db.rag_documents.create_index("slug", unique=True)
+    await _ensure_index(db.rag_documents, [("empresaId", 1)])
+    # Unique per company, not globally. A global unique index made one
+    # company's slug block every other company's: "politica-troca-devolucao"
+    # is the slug everyone reaches for, and the second tenant to upload it got
+    # a 409 telling them a document they cannot see already exists. Scoping the
+    # constraint to empresaId keeps slugs unique where they are actually
+    # resolved (always together with the tenant) and stops one tenant's
+    # namespace from leaking into another's.
+    await _replace_index(
+        db.rag_documents,
+        drop="slug_1",
+        keys=[("empresaId", 1), ("slug", 1)],
+        unique=True,
+    )
 
-    await db.rag_chunks.create_index([("documentId", 1)])
-    await db.rag_chunks.create_index([("documentId", 1), ("chunk", 1)])
+    await _ensure_index(db.rag_chunks, [("documentId", 1)])
+    await _ensure_index(db.rag_chunks, [("documentId", 1), ("chunk", 1)])
+
+    # The Judge writes one document here per evaluated answer and the
+    # Governance agent counts them by {empresaId, createdAt, score}; the
+    # collection had no index at all, so that count scanned everything the
+    # Judge had ever written, for every company.
+    await _ensure_index(db.prompt_evaluations, [("empresaId", 1), ("createdAt", -1)])
 
     print("[mongo-setup] Índices criados!")
 
