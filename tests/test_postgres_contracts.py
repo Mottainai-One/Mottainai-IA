@@ -217,6 +217,32 @@ class PostgresSchemaContracts(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await postgres_tools.get_inventory_status(42, store_id=0)
 
+    async def test_inventory_matches_resolves_the_whole_list_in_one_query(self):
+        # The shelf cross-check used to call the single-name lookup in a loop:
+        # one connection, one set_config and one unindexable ILIKE per detected
+        # product. The LATERAL subquery runs the same per-name query inside the
+        # database instead, so ten products cost one round trip, not eleven.
+        with patch(
+            "app.tools.postgres_tools._exec",
+            new=AsyncMock(return_value=[]),
+        ) as execute:
+            await postgres_tools.get_inventory_matches(42, ["Leite", "Pao", "Leite"])
+
+        execute.assert_awaited_once()
+        sql = execute.await_args.args[0]
+        self.assertIn("CROSS JOIN LATERAL", sql)
+        self.assertIn("unnest(CAST(:names AS text[]))", sql)
+        self.assertIn("LIMIT 1", sql)  # still one product per detected name
+        # de-duplicated and normalized before it reaches the database
+        self.assertEqual(execute.await_args.kwargs["params"]["names"], ["leite", "pao"])
+
+    async def test_inventory_matches_skips_the_query_when_nothing_was_detected(self):
+        with patch("app.tools.postgres_tools._exec", new=AsyncMock()) as execute:
+            result = await postgres_tools.get_inventory_matches(42, ["", "   "])
+
+        self.assertEqual(result, {})
+        execute.assert_not_awaited()
+
     async def test_inventory_match_uses_company_scoped_batches(self):
         with patch(
             "app.tools.postgres_tools._exec",
@@ -319,8 +345,8 @@ class ShelfInventoryContracts(unittest.IsolatedAsyncioTestCase):
         ]
         with (
             patch(
-                "app.tools.postgres_tools.get_inventory_match",
-                new=AsyncMock(return_value={"id": 1, "name": "Leite Integral"}),
+                "app.tools.postgres_tools.get_inventory_matches",
+                new=AsyncMock(return_value={"leite integral": {"id": 1, "name": "Leite Integral"}}),
             ),
             patch(
                 "app.tools.postgres_tools.get_inventory_status",
