@@ -31,6 +31,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from app.agents.runtime import MottainaiState, get_llm
 from app.memory.long_term import format_memory_for_prompt
 from app.memory.short_term import get_recent_vision_analyses
+from app.observability.tool_runs import timed_tool_call
 from app.rag.retriever import retrieve_with_sources
 from app.tools.postgres_tools import get_expiring_batches, get_inventory_status, get_stock_alerts
 from app.tools.redis_tools import format_notifications_for_agent, get_inbox
@@ -67,21 +68,45 @@ async def node_agente_funcionario(state: MottainaiState) -> MottainaiState:
     query = state["sanitized_input"]
     empresa_id = state["empresa_id"]
     usuario_id = state["usuario_id"]
+    tool_runs: list[dict] = []
 
     # Operational queries and notifications scoped by the authenticated context.
-    alerts_data = await get_stock_alerts(empresa_id, limit=5)
-    inventory_data = await get_inventory_status(empresa_id)
-    expiring_data = await get_expiring_batches(empresa_id, days_ahead=7)
-    notifications = await get_inbox(empresa_id, usuario_id, limit=5)
-    vision_analyses = await get_recent_vision_analyses(state["session_id"], limit=3)
+    alerts_data = await timed_tool_call(
+        tool_runs, "get_stock_alerts", get_stock_alerts(empresa_id, limit=5),
+        input={"empresa_id": empresa_id, "limit": 5},
+    )
+    inventory_data = await timed_tool_call(
+        tool_runs, "get_inventory_status", get_inventory_status(empresa_id),
+        input={"empresa_id": empresa_id},
+    )
+    expiring_data = await timed_tool_call(
+        tool_runs, "get_expiring_batches", get_expiring_batches(empresa_id, days_ahead=7),
+        input={"empresa_id": empresa_id, "days_ahead": 7},
+    )
+    notifications = await timed_tool_call(
+        tool_runs, "get_inbox", get_inbox(empresa_id, usuario_id, limit=5),
+        input={"empresa_id": empresa_id, "usuario_id": usuario_id, "limit": 5},
+    )
+    vision_analyses = await timed_tool_call(
+        tool_runs, "get_recent_vision_analyses",
+        get_recent_vision_analyses(state["session_id"], limit=3),
+        input={"session_id": state["session_id"], "limit": 3},
+    )
 
     # RAG: manual/procedures
-    rag_context, sources = await retrieve_with_sources(query, empresa_id)
+    rag_context, sources = await timed_tool_call(
+        tool_runs, "retrieve_with_sources", retrieve_with_sources(query, empresa_id),
+        input={"query": query, "empresa_id": empresa_id},
+    )
 
     # Formats the operational context (kept in Portuguese, see module docstring).
     # The batch list is truncated, so the heading carries the real total as
     # well — otherwise the agent would report the slice as the whole picture.
     expiring_shown = expiring_data[:EXPIRING_BATCHES_IN_PROMPT]
+    notifications_text = await timed_tool_call(
+        tool_runs, "format_notifications_for_agent",
+        format_notifications_for_agent(notifications), input=None,
+    )
     ops_context = f"""
 ALERTAS ATIVOS ({len(alerts_data)}):
 {json.dumps(alerts_data, default=str, ensure_ascii=False, indent=2)}
@@ -96,7 +121,7 @@ ANÁLISES DE PRATELEIRA RECENTES NESTA CONVERSA ({len(vision_analyses)}):
 {json.dumps(vision_analyses, default=str, ensure_ascii=False, indent=2)}
 
 NOTIFICAÇÕES:
-{await format_notifications_for_agent(notifications)}
+{notifications_text}
 """
 
     mem_context = format_memory_for_prompt(state["memory"])
@@ -122,4 +147,5 @@ NOTIFICAÇÕES:
         "sources": sources + extra_sources,
         "input_tokens": usage.get("input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),
+        "tool_runs": state.get("tool_runs", []) + tool_runs,
     }

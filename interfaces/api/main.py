@@ -64,6 +64,7 @@ from app.observability.logging_setup import (
     set_correlation_id,
 )
 from app.observability.metrics import get_metrics_summary, record_execution_metrics
+from app.observability.tool_runs import record_tool_runs
 from app.security.auth import AuthContext, require_auth, require_roles
 from config.settings import get_settings
 
@@ -337,6 +338,7 @@ async def chat(
         "input_tokens": 0,
         "output_tokens": 0,
         "node_latencies_ms": {},
+        "tool_runs": [],
     }
 
     try:
@@ -430,6 +432,13 @@ async def chat(
         node_latencies_ms=result.get("node_latencies_ms", {}),
     )
 
+    background_tasks.add_task(
+        record_tool_runs,
+        conversation_id=result.get("conversation_id"),
+        agent=result.get("selected_agent", "unknown"),
+        tool_runs=result.get("tool_runs", []),
+    )
+
     # Audit in the background (does not block)
     background_tasks.add_task(
         _run_governanca_async,
@@ -516,6 +525,7 @@ async def trigger_motor_preditivo(
         "sources": [],
         "input_tokens": 0,
         "output_tokens": 0,
+        "tool_runs": [],
     }
 
     from app.agents.juiz import node_agente_juiz
@@ -530,6 +540,13 @@ async def trigger_motor_preditivo(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="O modelo de IA configurado está indisponível. Verifique a disponibilidade do provedor ou do modelo e tente novamente.",
         ) from exc
+
+    # Not flushed to tool_runs: this trigger runs outside the chat graph, so
+    # there is no conversation document, but tool_runs.conversationId is a
+    # required, non-nullable objectId in the schema — a None here would fail
+    # $jsonSchema validation on every manual trigger. Deciding whether
+    # standalone runs should get a synthetic id or a schema change is a call
+    # for a separate, deliberate change, not a side effect of this one.
 
     return {
         "empresa_id": principal.empresa_id,
