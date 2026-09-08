@@ -208,8 +208,10 @@ jobs:
             COMMITS=$(git log --oneline ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
           else
             BEFORE_SHA="${{ github.event.before }}"
-            if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
-              # New branch / no previous ref to diff against: check only the pushed commit.
+            if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+              # New branch, or the previous tip was rewritten (force-push) and
+              # its commit no longer exists in this checkout: no valid base to
+              # diff against, so check only the commit that was just pushed.
               COMMITS=$(git log --oneline -1)
             else
               COMMITS=$(git log --oneline "$BEFORE_SHA"..${{ github.sha }})
@@ -250,7 +252,7 @@ jobs:
             CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
           else
             BEFORE_SHA="${{ github.event.before }}"
-            if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
               CHANGED=$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)
             else
               CHANGED=$(git diff --name-only "$BEFORE_SHA"..${{ github.sha }})
