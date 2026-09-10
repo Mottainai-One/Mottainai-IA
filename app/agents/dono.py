@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.runtime import MottainaiState, get_llm
 from app.memory.long_term import format_memory_for_prompt
+from app.observability.tool_runs import timed_tool_call
 from app.rag.retriever import retrieve_with_sources
 from app.tools.postgres_tools import (
     get_kpis,
@@ -39,12 +40,24 @@ async def node_agente_dono(state: MottainaiState) -> MottainaiState:
     """Owner Agent node in the LangGraph graph."""
     query = state["sanitized_input"]
     empresa_id = state["empresa_id"]
+    tool_runs: list[dict] = []
 
     # Analytics data from Postgres
-    kpis = await get_kpis(empresa_id)
-    sales = await get_sales_summary(empresa_id, days_back=30)
-    alerts = await get_stock_alerts(empresa_id, limit=10)
-    stores_kpis = await get_kpis_by_store(empresa_id, days_back=30)
+    kpis = await timed_tool_call(
+        tool_runs, "get_kpis", get_kpis(empresa_id), input={"empresa_id": empresa_id},
+    )
+    sales = await timed_tool_call(
+        tool_runs, "get_sales_summary", get_sales_summary(empresa_id, days_back=30),
+        input={"empresa_id": empresa_id, "days_back": 30},
+    )
+    alerts = await timed_tool_call(
+        tool_runs, "get_stock_alerts", get_stock_alerts(empresa_id, limit=10),
+        input={"empresa_id": empresa_id, "limit": 10},
+    )
+    stores_kpis = await timed_tool_call(
+        tool_runs, "get_kpis_by_store", get_kpis_by_store(empresa_id, days_back=30),
+        input={"empresa_id": empresa_id, "days_back": 30},
+    )
 
     analytics_context = f"""Data atual: {date.today().isoformat()}
 
@@ -63,7 +76,10 @@ ALERTAS PENDENTES:
 {json.dumps(alerts[:5], default=str, ensure_ascii=False, indent=2)}
 """
 
-    rag_context, sources = await retrieve_with_sources(query, empresa_id)
+    rag_context, sources = await timed_tool_call(
+        tool_runs, "retrieve_with_sources", retrieve_with_sources(query, empresa_id),
+        input={"query": query, "empresa_id": empresa_id},
+    )
     mem_context = format_memory_for_prompt(state["memory"])
 
     messages = [
@@ -84,4 +100,5 @@ ALERTAS PENDENTES:
         "sources": sources + [{"type": "sql", "ref": "mottainai.sales_transaction + alert + disposal + retail_store", "score": None}],
         "input_tokens": usage.get("input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),
+        "tool_runs": state.get("tool_runs", []) + tool_runs,
     }

@@ -35,6 +35,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from app.agents.runtime import MottainaiState, get_llm
 from app.analytics.forecasting import build_daily_series, forecast_product_demand
 from app.notifications.alert_webhook import notify_new_critical_alerts
+from app.observability.tool_runs import timed_tool_call
 from app.rag.external_source import get_weather_forecast, interpret_weather_for_demand
 from app.tools.mcp_tools import mcp_call_weather_agent
 from app.tools.postgres_tools import (
@@ -68,11 +69,23 @@ async def node_motor_preditivo(state: MottainaiState) -> MottainaiState:
     """
     empresa_id = state["empresa_id"]
     store_id = state.get("store_id")
+    tool_runs: list[dict] = []
 
     # 1. Postgres data
-    expiring = await get_expiring_batches(empresa_id, days_ahead=14, store_id=store_id)
-    sales = await get_sales_summary(empresa_id, days_back=60, store_id=store_id)
-    alerts = await get_stock_alerts(empresa_id, store_id=store_id)
+    expiring = await timed_tool_call(
+        tool_runs, "get_expiring_batches",
+        get_expiring_batches(empresa_id, days_ahead=14, store_id=store_id),
+        input={"empresa_id": empresa_id, "days_ahead": 14, "store_id": store_id},
+    )
+    sales = await timed_tool_call(
+        tool_runs, "get_sales_summary",
+        get_sales_summary(empresa_id, days_back=60, store_id=store_id),
+        input={"empresa_id": empresa_id, "days_back": 60, "store_id": store_id},
+    )
+    alerts = await timed_tool_call(
+        tool_runs, "get_stock_alerts", get_stock_alerts(empresa_id, store_id=store_id),
+        input={"empresa_id": empresa_id, "store_id": store_id},
+    )
 
     # 1b. Pushes a webhook for any CRITICAL alert not already notified —
     # see app/notifications/alert_webhook.py. Best-effort: never raises,
@@ -85,7 +98,11 @@ async def node_motor_preditivo(state: MottainaiState) -> MottainaiState:
     demand_forecast: list[dict] = []
     if top_products:
         product_ids = [p["product_id"] for p in top_products]
-        daily_rows = await get_daily_sales_series(empresa_id, product_ids, days_back=28, store_id=store_id)
+        daily_rows = await timed_tool_call(
+            tool_runs, "get_daily_sales_series",
+            get_daily_sales_series(empresa_id, product_ids, days_back=28, store_id=store_id),
+            input={"empresa_id": empresa_id, "product_ids": product_ids, "days_back": 28, "store_id": store_id},
+        )
         for product in top_products:
             series = build_daily_series(daily_rows, product["product_id"], days_back=28)
             forecast = forecast_product_demand(series)
@@ -97,9 +114,10 @@ async def node_motor_preditivo(state: MottainaiState) -> MottainaiState:
 
     # 2. External source — Open-Meteo via MCP (A2A)
     try:
-        weather_raw = await mcp_call_weather_agent(
-            latitude=-23.5505,   # São Paulo, Brazil
-            longitude=-46.6333,
+        weather_raw = await timed_tool_call(
+            tool_runs, "mcp_call_weather_agent",
+            mcp_call_weather_agent(latitude=-23.5505, longitude=-46.6333),  # São Paulo, Brazil
+            input={"latitude": -23.5505, "longitude": -46.6333},
         )
         forecast = await get_weather_forecast()
         weather_interpretation = interpret_weather_for_demand(forecast["forecast"])
@@ -152,4 +170,5 @@ ALERTAS ATIVOS:
         ],
         "input_tokens": usage.get("input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),
+        "tool_runs": state.get("tool_runs", []) + tool_runs,
     }

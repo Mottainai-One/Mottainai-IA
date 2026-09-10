@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.runtime import MottainaiState, get_llm
 from app.memory.long_term import format_memory_for_prompt
+from app.observability.tool_runs import timed_tool_call
 from app.rag.retriever import retrieve_with_sources
 
 
@@ -22,8 +23,12 @@ async def run_rag_chat_agent(
 ) -> MottainaiState:
     query = state["sanitized_input"]
     empresa_id = state["empresa_id"]
+    tool_runs: list[dict] = []
 
-    rag_context, sources = await retrieve_with_sources(query, empresa_id)
+    rag_context, sources = await timed_tool_call(
+        tool_runs, "retrieve_with_sources", retrieve_with_sources(query, empresa_id),
+        input={"query": query, "empresa_id": empresa_id},
+    )
     mem_context = format_memory_for_prompt(state["memory"])
 
     messages = [
@@ -41,4 +46,5 @@ async def run_rag_chat_agent(
         "sources": sources,
         "input_tokens": usage.get("input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),
+        "tool_runs": state.get("tool_runs", []) + tool_runs,
     }

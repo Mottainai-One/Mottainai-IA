@@ -39,6 +39,7 @@ class MottainaiState(TypedDict):
     input_tokens: int
     output_tokens: int
     node_latencies_ms: dict[str, float]
+    tool_runs: NotRequired[list[dict]]  # accumulated by agent nodes, flushed once in main.py
 
 
 def get_llm_model_label() -> str:
