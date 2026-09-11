@@ -14,6 +14,7 @@ from typing import Awaitable, Callable
 
 from langgraph.graph import END, StateGraph
 
+from app.agents.intent_catalog import get_active_intents, match_intent
 from app.agents.runtime import MottainaiState
 from app.guardrails.entrada import guardrail_entrada
 from app.guardrails.saida import guardrail_saida
@@ -65,6 +66,17 @@ async def node_load_context(state: MottainaiState) -> MottainaiState:
     return {**state, "history": history, "memory": memory, "conversation_id": conversation["_id"]}
 
 
+# Which agents an intent_catalog match may route a role to — an
+# authorization boundary, so it stays hardcoded here rather than in Mongo:
+# editing a document must never be able to route a CLIENTE to `dono`.
+ROLE_TO_INTENT_AGENTS = {"DONO": ["motor_preditivo"], "CLIENTE": ["faq"]}
+
+ROLE_TO_DEFAULT_AGENT = {
+    "ESTOQUISTA": "funcionario", "GERENTE": "funcionario",
+    "DONO": "dono", "CLIENTE": "cliente",
+}
+
+
 async def node_supervisor_route(state: MottainaiState) -> MottainaiState:
     """
     Supervisor: detects intent and selects the agent.
@@ -75,6 +87,13 @@ async def node_supervisor_route(state: MottainaiState) -> MottainaiState:
       - GERENTE (manager)        → agente_funcionario
       - DONO (owner)              → agente_dono (motor_preditivo if asking for a forecast)
       - CLIENTE (customer)        → agente_cliente or agente_faq for general questions
+
+    The forecast/FAQ keywords used to be two hardcoded Python sets here;
+    they now live in the intent_catalog collection (app/agents/
+    intent_catalog.py), edited without a redeploy, with the exact same
+    substring-match rule and a fallback to the same built-in keywords if
+    Mongo is unavailable — so this function's observable behavior for a
+    given role+message is unchanged.
     """
     if state.get("error"):
         return state
@@ -82,32 +101,21 @@ async def node_supervisor_route(state: MottainaiState) -> MottainaiState:
     role = state["user_role"].upper()
     text = state["sanitized_input"].lower()
 
-    # Predictive engine: only triggers for analytical/predictive questions.
-    # Keywords are in Portuguese because they match the end user's message.
-    KEYWORDS_PREDITIVO = {
-        "previsão", "previsao", "prever", "preve", "prevê",
-        "demanda", "abastecimento", "tendência", "tendencia",
-        "vai acabar", "quando acaba", "risco de falta", "risco de perda",
-        "projeção", "projecao", "próxima semana", "proxima semana",
-        "próximo mês", "proximo mes",
+    selected = ROLE_TO_DEFAULT_AGENT.get(role, "funcionario")
+    intent_key, selected_skill, confidence = "default", None, None
+
+    candidate_agents = ROLE_TO_INTENT_AGENTS.get(role)
+    if candidate_agents:  # ESTOQUISTA/GERENTE skip the lookup, same as before
+        intents = await get_active_intents()
+        matched_key, matched_agent, matched_confidence = match_intent(text, candidate_agents, intents)
+        if matched_agent:
+            intent_key, selected, confidence = matched_key, matched_agent, matched_confidence
+
+    routing_log = {
+        "selected_intent": intent_key, "selected_agent": selected,
+        "selected_skill": selected_skill, "confidence": confidence,
     }
-
-    if role == "DONO":
-        if any(kw in text for kw in KEYWORDS_PREDITIVO):
-            return {**state, "selected_agent": "motor_preditivo"}
-
-    # FAQ keywords, also in Portuguese to match the end user's message.
-    FAQ_KEYWORDS = {"faq", "dúvida", "duvida", "como funciona", "ajuda", "suporte", "fidelidade", "pontos", "sustentabilidade"}
-    if role == "CLIENTE":
-        selected = "faq" if any(keyword in text for keyword in FAQ_KEYWORDS) else "cliente"
-        return {**state, "selected_agent": selected}
-
-    role_to_agent = {
-        "ESTOQUISTA": "funcionario", "GERENTE": "funcionario",
-        "DONO": "dono",
-    }
-    selected = role_to_agent.get(role, "funcionario")
-    return {**state, "selected_agent": selected}
+    return {**state, "selected_agent": selected, "routing_log": routing_log}
 
 
 async def node_guardrail_saida(state: MottainaiState) -> MottainaiState:

@@ -154,6 +154,47 @@ def _state(role: str, message: str) -> dict:
     return {"user_role": role, "sanitized_input": message, "error": None}
 
 
+class RoutingLogShapeTests(unittest.IsolatedAsyncioTestCase):
+    """node_supervisor_route's routing_log — mocks intent_catalog directly
+    (rather than relying on whatever is seeded in Mongo) so these are
+    deterministic and independent of RoleRoutingTests above, which is
+    deliberately NOT mocked: it proves the fallback keywords alone
+    reproduce today's routing when Mongo is absent, exactly CI's situation.
+    """
+    INTENTS = [{"key": "cliente_faq", "agent": "faq", "examples": ["fidelidade"], "confidenceThreshold": 0.0}]
+
+    async def test_records_the_matched_intent_key_and_confidence(self):
+        with patch(
+            "app.agents.supervisor.get_active_intents", new=AsyncMock(return_value=self.INTENTS),
+        ):
+            result = await node_supervisor_route(_state("CLIENTE", "fidelidade"))
+
+        self.assertEqual(result["selected_agent"], "faq")
+        self.assertEqual(result["routing_log"]["selected_intent"], "cliente_faq")
+        self.assertEqual(result["routing_log"]["selected_agent"], "faq")
+        self.assertGreater(result["routing_log"]["confidence"], 0)
+
+    async def test_records_default_when_nothing_matches(self):
+        with patch(
+            "app.agents.supervisor.get_active_intents", new=AsyncMock(return_value=self.INTENTS),
+        ):
+            result = await node_supervisor_route(_state("CLIENTE", "quais promoções estão ativas?"))
+
+        self.assertEqual(result["selected_agent"], "cliente")
+        self.assertEqual(result["routing_log"]["selected_intent"], "default")
+        self.assertIsNone(result["routing_log"]["confidence"])
+
+    async def test_operational_roles_never_query_intent_catalog(self):
+        # ESTOQUISTA/GERENTE aren't in ROLE_TO_INTENT_AGENTS — same
+        # behavior as before this change, and one less Mongo round trip
+        # on the two roles that never needed it.
+        with patch("app.agents.supervisor.get_active_intents", new=AsyncMock()) as get_intents:
+            result = await node_supervisor_route(_state("ESTOQUISTA", "Quais alertas estão ativos?"))
+
+        get_intents.assert_not_awaited()
+        self.assertEqual(result["routing_log"]["selected_intent"], "default")
+
+
 class RequestValidationTests(unittest.TestCase):
     def test_rejects_identity_claims_in_payload(self):
         with self.assertRaises(ValidationError):

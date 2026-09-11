@@ -164,6 +164,36 @@ async def setup(seed_demo: bool = False, check_only: bool = False):
     print(f"[mongo-setup] Aplicando schema ({len(schema)} coleções)...")
     await apply_schema(db, schema)
 
+    # ──────────────────────────────────────────────
+    # 1b. intent_catalog: sempre, nunca atrás de --seed-demo
+    # ──────────────────────────────────────────────
+    # O roteamento do supervisor depende desses documentos existirem em
+    # QUALQUER ambiente — sem eles, CLIENTE/DONO perdem a distinção
+    # faq/cliente e dono/motor_preditivo silenciosamente, sem erro nenhum
+    # (app/agents/intent_catalog.py cai pro fallback embutido, que é o
+    # mesmo texto — mas um ambiente que nunca aplicou o seed nem chega a
+    # testar esse caminho). label/agent/examples são "donos" do código:
+    # um $set os mantém sincronizados a cada execução. active/
+    # confidenceThreshold são "donos" do operador: só entram no
+    # $setOnInsert, pra um `active: false` manual sobreviver a reruns
+    # deste script.
+    from app.agents.intent_catalog import FALLBACK_INTENTS
+
+    print("[mongo-setup] Sincronizando intent_catalog...")
+    CODE_OWNED_INTENT_FIELDS = {"label", "description", "agent", "skill", "examples"}
+    for intent in FALLBACK_INTENTS:
+        await db.intent_catalog.update_one(
+            {"key": intent["key"]},
+            {
+                "$set": {k: v for k, v in intent.items() if k in CODE_OWNED_INTENT_FIELDS},
+                "$setOnInsert": {
+                    "key": intent["key"], "createdAt": utcnow(),
+                    "active": True, "confidenceThreshold": 0.0,
+                },
+            },
+            upsert=True,
+        )
+    print(f"[mongo-setup] {len(FALLBACK_INTENTS)} intent(s) sincronizado(s).")
 
     # ──────────────────────────────────────────────
     # 2. Seed: documentos RAG
