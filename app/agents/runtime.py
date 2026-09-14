@@ -40,6 +40,7 @@ class MottainaiState(TypedDict):
     output_tokens: int
     node_latencies_ms: dict[str, float]
     tool_runs: NotRequired[list[dict]]  # accumulated by agent nodes, flushed once in main.py
+    routing_log: NotRequired[dict]  # set by node_supervisor_route, flushed once in main.py
 
 
 def get_llm_model_label() -> str:

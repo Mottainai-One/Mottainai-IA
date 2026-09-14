@@ -64,6 +64,7 @@ from app.observability.logging_setup import (
     set_correlation_id,
 )
 from app.observability.metrics import get_metrics_summary, record_execution_metrics
+from app.observability.routing_logs import record_routing_log
 from app.observability.tool_runs import record_tool_runs
 from app.security.auth import AuthContext, require_auth, require_roles
 from config.settings import get_settings
@@ -437,6 +438,16 @@ async def chat(
         conversation_id=result.get("conversation_id"),
         agent=result.get("selected_agent", "unknown"),
         tool_runs=result.get("tool_runs", []),
+    )
+
+    routing_log = result.get("routing_log") or {}
+    background_tasks.add_task(
+        record_routing_log,
+        conversation_id=result.get("conversation_id"),
+        intent=routing_log.get("selected_intent", "default"),
+        selected_agent=routing_log.get("selected_agent", result.get("selected_agent", "unknown")),
+        selected_skill=routing_log.get("selected_skill"),
+        confidence=routing_log.get("confidence"),
     )
 
     # Audit in the background (does not block)
