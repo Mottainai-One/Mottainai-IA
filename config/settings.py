@@ -92,6 +92,20 @@ class Settings(BaseSettings):
     # aren't transient and retrying them would just waste time.
     postgres_max_retries: int = 3
 
+    # Connection pool (AsyncAdaptedQueuePool). `pool_size` + `max_overflow`
+    # bounds how many concurrent Postgres connections the app can hold, so
+    # this has to stay in a sane ratio with anything that fans out
+    # concurrent queries (e.g. a semaphore around asyncio.gather) — a
+    # semaphore wider than pool_size + max_overflow just recreates the
+    # NullPool wait under a different name.
+    postgres_pool_size: int = 5
+    postgres_max_overflow: int = 10
+    postgres_pool_timeout_seconds: float = 30.0
+    # Discards a pooled connection that fails a lightweight liveness check
+    # instead of handing the app a dead one (e.g. Postgres restarted or an
+    # idle connection was reset by a firewall/proxy).
+    postgres_pool_pre_ping: bool = True
+
     # RAG results cache in Redis — avoids recomputing embeddings/similarity
     # for the same question within the same company. Purely a latency
     # optimization: if Redis is unavailable, RAG keeps working without

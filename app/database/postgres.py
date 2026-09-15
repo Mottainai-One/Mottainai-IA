@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import AsyncAdaptedQueuePool
 
 from app.config import get_settings
 
@@ -14,7 +14,11 @@ settings = get_settings()
 
 engine = create_async_engine(
     settings.postgres_dsn,
-    poolclass=NullPool,  # no pooling — academic environment, simplifies management
+    poolclass=AsyncAdaptedQueuePool,
+    pool_size=settings.postgres_pool_size,
+    max_overflow=settings.postgres_max_overflow,
+    pool_timeout=settings.postgres_pool_timeout_seconds,
+    pool_pre_ping=settings.postgres_pool_pre_ping,
     echo=False,
 )
 
