@@ -1828,6 +1828,20 @@ ALTER TABLE inventory ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales_transaction ENABLE ROW LEVEL SECURITY;
 ALTER TABLE purchase_order ENABLE ROW LEVEL SECURITY;
 
+-- ENABLE alone still lets the table owner (and any superuser) read and
+-- write past every policy below — verified live: the app's `mottainai`
+-- role is `rolsuper=true, rolbypassrls=true`, not merely the table
+-- owner. FORCE closes the owner side of that; the superuser/bypassrls
+-- side can only be closed by not connecting as that role at all — see
+-- `mottainai_app` in the GRANTS section, which is what this app must
+-- actually connect as for these policies to do anything.
+ALTER TABLE company FORCE ROW LEVEL SECURITY;
+ALTER TABLE retail_store FORCE ROW LEVEL SECURITY;
+ALTER TABLE employee FORCE ROW LEVEL SECURITY;
+ALTER TABLE inventory FORCE ROW LEVEL SECURITY;
+ALTER TABLE sales_transaction FORCE ROW LEVEL SECURITY;
+ALTER TABLE purchase_order FORCE ROW LEVEL SECURITY;
+
 CREATE POLICY company_policy ON company
     USING (company_id = fn_get_current_company_id());
 
@@ -3798,12 +3812,47 @@ $$;
 -- 32_GRANTS.SQL
 -- ====================================================================
 
--- GRANT USAGE ON SCHEMA mottainai TO app_user;
--- GRANT USAGE ON SCHEMA mottainai_analytics TO app_user;
--- GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA mottainai TO app_user;
--- GRANT USAGE ON ALL SEQUENCES IN SCHEMA mottainai TO app_user;
--- GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA mottainai TO app_user;
--- GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA mottainai TO app_user;
+-- Least-privilege application role. `app_user` (the name these grants
+-- used to target, commented out) is already a TABLE in this schema
+-- (see CREATE TABLE app_user above) — a Postgres role sharing that
+-- name would be confusing at best, so the role is `mottainai_app`.
+--
+-- The app's current role (`mottainai`, in POSTGRES_DSN) is a
+-- superuser with BYPASSRLS: it ignores every policy in the ROW LEVEL
+-- SECURITY section above regardless of FORCE. Applying this block
+-- without also switching POSTGRES_DSN to mottainai_app changes
+-- nothing observable — the isolation only takes effect once the app
+-- actually connects as this role.
+--
+-- Set the password out-of-band and never commit it here, e.g.:
+--   ALTER ROLE mottainai_app WITH PASSWORD '...';
+CREATE ROLE mottainai_app LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+
+-- fn_atomic_update_inventory (used by discard_batch/receive_inventory)
+-- references `inventory` unqualified, not `mottainai.inventory` — it
+-- only resolves today because `mottainai` (the role) and `mottainai`
+-- (the schema) share a name, so the default search_path `"$user",
+-- public` happens to include the schema for that one role. A new role
+-- gets no such coincidence and the function fails with "relation
+-- inventory does not exist" (reproduced live) without this.
+ALTER ROLE mottainai_app SET search_path = mottainai, public;
+
+GRANT USAGE ON SCHEMA mottainai TO mottainai_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA mottainai TO mottainai_app;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA mottainai TO mottainai_app;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA mottainai TO mottainai_app;
+GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA mottainai TO mottainai_app;
+
+-- Without this, a table/sequence/function added by a later migration
+-- (run as `mottainai`, the schema owner) would silently NOT be
+-- granted to mottainai_app, and the app would get a permission error
+-- on it instead of the missing grant being obvious from this file.
+ALTER DEFAULT PRIVILEGES FOR ROLE mottainai IN SCHEMA mottainai
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO mottainai_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE mottainai IN SCHEMA mottainai
+    GRANT USAGE ON SEQUENCES TO mottainai_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE mottainai IN SCHEMA mottainai
+    GRANT EXECUTE ON FUNCTIONS TO mottainai_app;
 
 -- ====================================================================
 -- END OF SCRIPT - VERSION 9.1 ENTERPRISE FINAL - CLIENT MOBILE + POS + INTEGRITY
