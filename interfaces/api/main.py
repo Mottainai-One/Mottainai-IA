@@ -46,6 +46,7 @@ from pydantic import BaseModel, Field
 from app.agents.governanca import run_auditoria_execucoes, run_relatorio_conformidade
 from app.agents.runtime import get_llm_model_label
 from app.agents.supervisor import MottainaiState, mottainai_graph, node_guardrail_saida
+from app.cache.idempotency import InvalidIdempotencyKey, run_idempotent
 from app.database.mongo import get_mongo_db
 from app.database.operational_schema import OPERATIONAL_SCHEMA_READY_QUERY
 from app.integrations.mcp_a2a import a2a_agent_card, dispatch_a2a, dispatch_mcp
@@ -343,7 +344,14 @@ async def chat(
     }
 
     try:
-        result = await mottainai_graph.ainvoke(initial_state)
+        result = await asyncio.wait_for(
+            mottainai_graph.ainvoke(initial_state), timeout=settings.chat_timeout_seconds
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="O agente demorou demais para responder. Tente novamente.",
+        ) from exc
     except SessionOwnershipError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except SessionExpiredError as exc:
@@ -590,56 +598,74 @@ class ReceberMercadoriaRequest(BaseModel):
 async def descartar_lote(
     body: DescartarLoteRequest,
     principal: Annotated[AuthContext, Depends(require_roles("ESTOQUISTA", "GERENTE", "DONO"))],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ):
     """
     Registers a batch disposal: writes the disposal/disposal_item audit
     rows and atomically decrements the matching inventory row (with its own
     inventory_movement audit trail).
+
+    Idempotency-Key is required: a network timeout between this response
+    leaving the server and reaching the client makes a well-behaved client
+    retry, and without this the retry would discard the batch a second
+    time — the database has no way to tell "the same disposal, resent"
+    from "a second, distinct disposal".
     """
     from app.tools.postgres_tools import discard_batch
 
-    try:
-        result = await discard_batch(
-            empresa_id=principal.empresa_id,
-            store_id=body.store_id,
-            batch_id=body.batch_id,
-            employee_id=principal.usuario_id,
-            quantity=body.quantity,
-            reason=body.reason,
-            observation=body.observation,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    async def _discard() -> dict:
+        try:
+            return await discard_batch(
+                empresa_id=principal.empresa_id,
+                store_id=body.store_id,
+                batch_id=body.batch_id,
+                employee_id=principal.usuario_id,
+                quantity=body.quantity,
+                reason=body.reason,
+                observation=body.observation,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
-    return result
+    try:
+        return await run_idempotent(principal.empresa_id, idempotency_key, _discard)
+    except InvalidIdempotencyKey as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @app.post("/funcionario/receber-mercadoria", tags=["Funcionário"])
 async def receber_mercadoria(
     body: ReceberMercadoriaRequest,
     principal: Annotated[AuthContext, Depends(require_roles("ESTOQUISTA", "GERENTE", "DONO"))],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ):
     """
     Registers receipt of goods for a batch already tracked in inventory at
     that store (e.g. confirming a restock). Does not create new products or
     batches — that's a separate, bigger feature intentionally left out of
     scope here.
+
+    Idempotency-Key is required — same reasoning as descartar_lote above.
     """
     from app.tools.postgres_tools import receive_inventory
 
-    try:
-        result = await receive_inventory(
-            empresa_id=principal.empresa_id,
-            store_id=body.store_id,
-            batch_id=body.batch_id,
-            employee_id=principal.usuario_id,
-            quantity=body.quantity,
-            observation=body.observation,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    async def _receive() -> dict:
+        try:
+            return await receive_inventory(
+                empresa_id=principal.empresa_id,
+                store_id=body.store_id,
+                batch_id=body.batch_id,
+                employee_id=principal.usuario_id,
+                quantity=body.quantity,
+                observation=body.observation,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
-    return result
+    try:
+        return await run_idempotent(principal.empresa_id, idempotency_key, _receive)
+    except InvalidIdempotencyKey as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @app.get("/metrics/summary", tags=["Métricas"])

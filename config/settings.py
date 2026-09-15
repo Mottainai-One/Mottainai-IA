@@ -98,6 +98,20 @@ class Settings(BaseSettings):
     # cache (fail-open).
     rag_cache_ttl_seconds: int = 300
 
+    # Idempotency-Key store (app/cache/idempotency.py) for writes where a
+    # client retry after a lost response must not double-apply (batch
+    # disposal, inventory receipt). 24h comfortably outlives any client
+    # retry window without keeping every key around forever.
+    idempotency_ttl_seconds: int = 86400
+
+    # Bounds a single /chat request (the LangGraph run: guardrail -> ...
+    # -> judge -> guardrail). Set from the slowest *successful* scenario
+    # actually observed live this project (motor_preditivo, ~128s, driven
+    # by several sequential Postgres calls plus an external weather API
+    # call) with real margin above it — this exists to bound a genuinely
+    # stuck provider/network call, not to cut off legitimately slow ones.
+    chat_timeout_seconds: float = 180.0
+
     # External integrations (endpoints blocked without configured tokens)
     mcp_shared_token: str = ""
     a2a_shared_token: str = ""

@@ -29,3 +29,7 @@ def notified_alert(empresa_id: int, alert_id: str) -> str:
 
 def revoked_token(jti: str) -> str:
     return f"{PREFIX}:auth:revoked:{jti}"
+
+
+def idempotency(empresa_id: int, key: str) -> str:
+    return f"{PREFIX}:idempotency:{empresa_id}:{key}"
