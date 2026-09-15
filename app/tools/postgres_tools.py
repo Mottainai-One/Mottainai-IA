@@ -647,18 +647,22 @@ def _validate_positive_int(value: Any, field_name: str) -> None:
         raise ValueError(f"{field_name} must be a positive integer.")
 
 
-async def _find_inventory_id(
+async def _find_inventory(
     session,
     *,
     empresa_id: int,
     store_id: int,
     batch_id: int,
-) -> int:
-    """Resolves (store_id, batch_id) to an inventory_id, scoped to the tenant."""
+):
+    """Resolves (store_id, batch_id) to its inventory row (inventory_id,
+    current_quantity), scoped to the tenant. current_quantity is the
+    balance BEFORE any write this call is part of — discard_batch needs
+    it to check the disposal ceiling against what's on hand right now,
+    not the function's own post-decrement balance."""
     row = (
         await session.execute(
             text("""
-                SELECT i.inventory_id
+                SELECT i.inventory_id, i.current_quantity
                 FROM mottainai.inventory i
                 JOIN mottainai.retail_store rs ON rs.store_id = i.store_id
                 JOIN mottainai.company c ON c.company_id = rs.company_id
@@ -679,7 +683,29 @@ async def _find_inventory_id(
         raise ValueError(
             f"No inventory record for batch_id={batch_id} at store_id={store_id} in this company."
         )
-    return row["inventory_id"]
+    return row
+
+
+class DisposalCeilingExceeded(Exception):
+    """A single disposal would remove more than settings.disposal_ceiling_percent
+    of the batch's current quantity, and the acting role isn't authorized
+    to do that alone (only GERENTE/DONO are)."""
+
+    def __init__(self, *, requested: Decimal, current_quantity: Decimal, ceiling_percent: float):
+        self.requested = requested
+        self.current_quantity = current_quantity
+        self.ceiling_percent = ceiling_percent
+        super().__init__(
+            f"Disposal of {requested} exceeds {ceiling_percent}% of the current "
+            f"balance ({current_quantity}); requires GERENTE or DONO approval."
+        )
+
+
+# Only these roles may discard more than settings.disposal_ceiling_percent of
+# a batch's current quantity in a single call — an authorization boundary,
+# so (like ROLE_TO_INTENT_AGENTS in app/agents/supervisor.py) it stays
+# hardcoded here rather than becoming app-configurable.
+_DISPOSAL_CEILING_EXEMPT_ROLES = {"GERENTE", "DONO"}
 
 
 async def discard_batch(
@@ -689,6 +715,7 @@ async def discard_batch(
     employee_id: int,
     quantity: Decimal,
     reason: str,
+    role: str,
     observation: str | None = None,
 ) -> dict:
     """
@@ -696,6 +723,11 @@ async def discard_batch(
     audit rows and atomically decrements the matching inventory row via the
     schema's fn_atomic_update_inventory (row-locked, optimistic-version-checked,
     writes its own inventory_movement row). Used by the Employee Agent.
+
+    Raises DisposalCeilingExceeded, before writing anything, if `quantity` is
+    more than settings.disposal_ceiling_percent of the batch's current
+    quantity and `role` isn't GERENTE/DONO — an ESTOQUISTA cannot single-
+    handedly discard most or all of a batch.
     """
     _validate_positive_int(store_id, "store_id")
     _validate_positive_int(batch_id, "batch_id")
@@ -712,9 +744,22 @@ async def discard_batch(
             {"empresa_id": str(empresa_id)},
         )
 
-        inventory_id = await _find_inventory_id(
+        inventory = await _find_inventory(
             session, empresa_id=empresa_id, store_id=store_id, batch_id=batch_id
         )
+        inventory_id = inventory["inventory_id"]
+        current_quantity = inventory["current_quantity"]
+
+        if (
+            role.upper() not in _DISPOSAL_CEILING_EXEMPT_ROLES
+            and current_quantity > 0
+            and (quantity / current_quantity) * 100 > Decimal(str(settings.disposal_ceiling_percent))
+        ):
+            raise DisposalCeilingExceeded(
+                requested=quantity,
+                current_quantity=current_quantity,
+                ceiling_percent=settings.disposal_ceiling_percent,
+            )
 
         disposal_row = (
             await session.execute(
@@ -794,9 +839,10 @@ async def receive_inventory(
             {"empresa_id": str(empresa_id)},
         )
 
-        inventory_id = await _find_inventory_id(
+        inventory = await _find_inventory(
             session, empresa_id=empresa_id, store_id=store_id, batch_id=batch_id
         )
+        inventory_id = inventory["inventory_id"]
 
         balance_row = (
             await session.execute(

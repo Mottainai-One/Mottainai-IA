@@ -9,8 +9,10 @@ from pymongo.errors import DuplicateKeyError
 
 from app.rag.ingestion import (
     CATEGORIES,
+    DocumentNotFoundError,
     DuplicateSlugError,
     category_for_source,
+    delete_document,
     ingest_document,
     split_into_chunks,
 )
@@ -55,11 +57,19 @@ class FakeInsertResult:
         self.inserted_id = inserted_id
 
 
+class FakeDeleteResult:
+    def __init__(self, deleted_count):
+        self.deleted_count = deleted_count
+
+
 class FakeCollection:
-    def __init__(self, *, insert_one_error=None):
+    def __init__(self, *, insert_one_error=None, seed=None):
         self.inserted_docs = []
         self.inserted_many_docs = None
         self._insert_one_error = insert_one_error
+        self.documents = list(seed or [])
+        self.delete_many_filters = []
+        self.delete_one_filters = []
 
     async def insert_one(self, doc):
         if self._insert_one_error:
@@ -69,6 +79,29 @@ class FakeCollection:
 
     async def insert_many(self, docs):
         self.inserted_many_docs = docs
+
+    async def find_one(self, query):
+        for doc in self.documents:
+            if all(doc.get(k) == v for k, v in query.items()):
+                return doc
+        return None
+
+    async def delete_many(self, query):
+        self.delete_many_filters.append(query)
+        before = len(self.documents)
+        self.documents = [
+            doc for doc in self.documents
+            if not all(doc.get(k) == v for k, v in query.items())
+        ]
+        return FakeDeleteResult(before - len(self.documents))
+
+    async def delete_one(self, query):
+        self.delete_one_filters.append(query)
+        for i, doc in enumerate(self.documents):
+            if all(doc.get(k) == v for k, v in query.items()):
+                del self.documents[i]
+                return FakeDeleteResult(1)
+        return FakeDeleteResult(0)
 
 
 class IngestDocumentTests(unittest.IsolatedAsyncioTestCase):
@@ -180,6 +213,44 @@ class IngestDocumentTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertEqual(db.rag_documents.inserted_docs, [])
+
+
+class DeleteDocumentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_deletes_the_document_and_its_chunks(self):
+        db = SimpleNamespace(
+            rag_documents=FakeCollection(seed=[{"_id": "doc-1", "empresaId": 1, "slug": "faq-x"}]),
+            rag_chunks=FakeCollection(seed=[
+                {"_id": "c1", "documentId": "doc-1"}, {"_id": "c2", "documentId": "doc-1"},
+            ]),
+        )
+
+        with patch("app.rag.ingestion.get_mongo_db", return_value=db):
+            result = await delete_document(empresa_id=1, slug="faq-x")
+
+        self.assertEqual(result, {"slug": "faq-x", "chunks_deleted": 2})
+        self.assertEqual(db.rag_documents.documents, [])  # the document is gone
+        self.assertEqual(db.rag_chunks.documents, [])  # so are both its chunks
+
+    async def test_raises_when_the_slug_belongs_to_another_tenant(self):
+        db = SimpleNamespace(
+            rag_documents=FakeCollection(seed=[{"_id": "doc-1", "empresaId": 1, "slug": "faq-x"}]),
+            rag_chunks=FakeCollection(seed=[{"_id": "c1", "documentId": "doc-1"}]),
+        )
+
+        with patch("app.rag.ingestion.get_mongo_db", return_value=db):
+            with self.assertRaises(DocumentNotFoundError):
+                await delete_document(empresa_id=2, slug="faq-x")  # wrong tenant
+
+        # neither the other tenant's document nor its chunks were touched
+        self.assertEqual(len(db.rag_documents.documents), 1)
+        self.assertEqual(len(db.rag_chunks.documents), 1)
+
+    async def test_raises_for_an_unknown_slug(self):
+        db = SimpleNamespace(rag_documents=FakeCollection(), rag_chunks=FakeCollection())
+
+        with patch("app.rag.ingestion.get_mongo_db", return_value=db):
+            with self.assertRaises(DocumentNotFoundError):
+                await delete_document(empresa_id=1, slug="nao-existe")
 
 
 if __name__ == "__main__":

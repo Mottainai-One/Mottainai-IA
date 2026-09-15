@@ -98,6 +98,13 @@ class Settings(BaseSettings):
     # cache (fail-open).
     rag_cache_ttl_seconds: int = 300
 
+    # Ceiling on a single batch disposal (app/tools/postgres_tools.py's
+    # discard_batch): above this % of the batch's current quantity, only
+    # GERENTE/DONO may proceed (ESTOQUISTA is blocked) — an ESTOQUISTA
+    # could otherwise single-handedly zero out an entire batch. Business
+    # decision (percent-of-batch, 30%), not a technical default.
+    disposal_ceiling_percent: float = 30.0
+
     # Idempotency-Key store (app/cache/idempotency.py) for writes where a
     # client retry after a lost response must not double-apply (batch
     # disposal, inventory receipt). 24h comfortably outlives any client

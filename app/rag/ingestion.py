@@ -50,6 +50,10 @@ class DuplicateSlugError(ValueError):
     """Raised when rag_documents already has this slug (unique index)."""
 
 
+class DocumentNotFoundError(ValueError):
+    """No rag_documents row for this (empresa_id, slug)."""
+
+
 def split_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list[str]:
     """
     Splits on blank lines (paragraphs) first; any paragraph still longer
@@ -148,3 +152,27 @@ async def ingest_document(
         "slug": slug,
         "chunks": len(chunks_text),
     }
+
+
+async def delete_document(empresa_id: int, slug: str) -> dict:
+    """
+    Deletes a company's rag_documents row and every rag_chunks row that
+    references it. POST /rag/documents (interfaces/api/main.py) never had
+    a matching DELETE: a wrong or adversarial upload became permanent
+    knowledge-base content with no way to remove it.
+
+    Deletes chunks before the document, not after: if this is interrupted
+    between the two, the document row still exists, so a retry finds it
+    again by slug and finishes the job (deleting zero already-gone chunks
+    is a no-op) — the other order would leave chunks orphaned with no
+    document left to find them through.
+    """
+    db = get_mongo_db()
+    document = await db.rag_documents.find_one({"empresaId": empresa_id, "slug": slug})
+    if document is None:
+        raise DocumentNotFoundError(f"Nenhum documento com slug '{slug}' para esta empresa.")
+
+    chunks_result = await db.rag_chunks.delete_many({"documentId": document["_id"]})
+    await db.rag_documents.delete_one({"_id": document["_id"]})
+
+    return {"slug": slug, "chunks_deleted": chunks_result.deleted_count}

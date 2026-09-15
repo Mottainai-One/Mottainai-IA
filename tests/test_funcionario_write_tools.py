@@ -42,7 +42,7 @@ class DiscardBatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_writes_disposal_audit_rows_and_decrements_inventory(self):
         session = FakeWriteSession([
             None,  # set_config
-            FakeMappingResult({"inventory_id": 5}),  # _find_inventory_id
+            FakeMappingResult({"inventory_id": 5, "current_quantity": Decimal("100")}),  # _find_inventory
             FakeMappingResult({"disposal_id": 900}),  # INSERT disposal RETURNING
             None,  # INSERT disposal_item
             FakeMappingResult({"new_balance": Decimal("12.000")}),  # fn_atomic_update_inventory
@@ -50,7 +50,7 @@ class DiscardBatchTests(unittest.IsolatedAsyncioTestCase):
         with patch("app.tools.postgres_tools.get_pg_session", return_value=FakeSessionContext(session)):
             result = await postgres_tools.discard_batch(
                 empresa_id=42, store_id=1, batch_id=77, employee_id=9,
-                quantity=Decimal("3"), reason="vencido",
+                quantity=Decimal("3"), reason="vencido", role="GERENTE",
             )
 
         self.assertEqual(result, {
@@ -67,36 +67,85 @@ class DiscardBatchTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 await postgres_tools.discard_batch(
                     empresa_id=42, store_id=1, batch_id=77, employee_id=9,
-                    quantity=Decimal("1"), reason="vencido",
+                    quantity=Decimal("1"), reason="vencido", role="GERENTE",
                 )
 
     async def test_rejects_non_positive_quantity(self):
         with self.assertRaises(ValueError):
             await postgres_tools.discard_batch(
                 empresa_id=42, store_id=1, batch_id=77, employee_id=9,
-                quantity=Decimal("0"), reason="vencido",
+                quantity=Decimal("0"), reason="vencido", role="GERENTE",
             )
 
     async def test_rejects_blank_reason(self):
         with self.assertRaises(ValueError):
             await postgres_tools.discard_batch(
                 empresa_id=42, store_id=1, batch_id=77, employee_id=9,
-                quantity=Decimal("1"), reason="   ",
+                quantity=Decimal("1"), reason="   ", role="GERENTE",
             )
 
     async def test_rejects_invalid_store_id(self):
         with self.assertRaises(ValueError):
             await postgres_tools.discard_batch(
                 empresa_id=42, store_id=0, batch_id=77, employee_id=9,
-                quantity=Decimal("1"), reason="vencido",
+                quantity=Decimal("1"), reason="vencido", role="GERENTE",
             )
+
+    async def test_estoquista_blocked_above_the_disposal_ceiling(self):
+        session = FakeWriteSession([
+            None,  # set_config
+            FakeMappingResult({"inventory_id": 5, "current_quantity": Decimal("100")}),  # _find_inventory
+        ])
+        with patch("app.tools.postgres_tools.get_pg_session", return_value=FakeSessionContext(session)):
+            with self.assertRaises(postgres_tools.DisposalCeilingExceeded):
+                await postgres_tools.discard_batch(
+                    # 31 of 100 = 31% > the 30% default ceiling
+                    empresa_id=42, store_id=1, batch_id=77, employee_id=9,
+                    quantity=Decimal("31"), reason="vencido", role="ESTOQUISTA",
+                )
+        # blocked before any write — only the lookup ran, no INSERT/UPDATE
+        self.assertEqual(len(session.statements), 2)
+
+    async def test_estoquista_allowed_at_or_below_the_disposal_ceiling(self):
+        session = FakeWriteSession([
+            None,  # set_config
+            FakeMappingResult({"inventory_id": 5, "current_quantity": Decimal("100")}),  # _find_inventory
+            FakeMappingResult({"disposal_id": 901}),  # INSERT disposal RETURNING
+            None,  # INSERT disposal_item
+            FakeMappingResult({"new_balance": Decimal("70.000")}),  # fn_atomic_update_inventory
+        ])
+        with patch("app.tools.postgres_tools.get_pg_session", return_value=FakeSessionContext(session)):
+            result = await postgres_tools.discard_batch(
+                # exactly 30 of 100 = 30%, at the ceiling, not above it
+                empresa_id=42, store_id=1, batch_id=77, employee_id=9,
+                quantity=Decimal("30"), reason="vencido", role="ESTOQUISTA",
+            )
+
+        self.assertEqual(result["disposal_id"], 901)
+
+    async def test_gerente_and_dono_bypass_the_disposal_ceiling(self):
+        for role in ("GERENTE", "DONO"):
+            session = FakeWriteSession([
+                None,
+                FakeMappingResult({"inventory_id": 5, "current_quantity": Decimal("100")}),
+                FakeMappingResult({"disposal_id": 902}),
+                None,
+                FakeMappingResult({"new_balance": Decimal("1.000")}),
+            ])
+            with patch("app.tools.postgres_tools.get_pg_session", return_value=FakeSessionContext(session)):
+                # 99 of 100 = 99%, far above the ceiling, but GERENTE/DONO are exempt
+                result = await postgres_tools.discard_batch(
+                    empresa_id=42, store_id=1, batch_id=77, employee_id=9,
+                    quantity=Decimal("99"), reason="vencido", role=role,
+                )
+            self.assertEqual(result["disposal_id"], 902)
 
 
 class ReceiveInventoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_increments_inventory_with_in_movement(self):
         session = FakeWriteSession([
             None,  # set_config
-            FakeMappingResult({"inventory_id": 5}),  # _find_inventory_id
+            FakeMappingResult({"inventory_id": 5}),  # _find_inventory
             FakeMappingResult({"new_balance": Decimal("40.000")}),  # fn_atomic_update_inventory
         ])
         with patch("app.tools.postgres_tools.get_pg_session", return_value=FakeSessionContext(session)):

@@ -36,6 +36,7 @@ from interfaces.api.main import (
     ReceberMercadoriaRequest,
     trigger_motor_preditivo,
     unhandled_exception_handler,
+    delete_rag_document,
     upload_rag_document,
 )
 
@@ -201,6 +202,26 @@ class RagDocumentUploadRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.exception.status_code, 422)
 
 
+class RagDocumentDeleteRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_deletes_the_document_for_the_authenticated_company(self):
+        tool = AsyncMock(return_value={"slug": "faq-x", "chunks_deleted": 3})
+
+        with patch("app.rag.ingestion.delete_document", new=tool):
+            result = await delete_rag_document("faq-x", AuthContext(usuario_id=7, empresa_id=42, role="GERENTE"))
+
+        tool.assert_awaited_once_with(42, "faq-x")
+        self.assertEqual(result["chunks_deleted"], 3)
+
+    async def test_returns_404_for_an_unknown_slug(self):
+        from app.rag.ingestion import DocumentNotFoundError
+
+        with patch("app.rag.ingestion.delete_document", new=AsyncMock(side_effect=DocumentNotFoundError("n/a"))):
+            with self.assertRaises(HTTPException) as context:
+                await delete_rag_document("nao-existe", AuthContext(usuario_id=7, empresa_id=42, role="DONO"))
+
+        self.assertEqual(context.exception.status_code, 404)
+
+
 class FakeIdempotencyRedis:
     """In-memory stand-in for app.database.redis_client.get_redis(), just
     the two calls app/cache/idempotency.py makes."""
@@ -228,7 +249,7 @@ class EmployeeWriteRoutesTests(unittest.IsolatedAsyncioTestCase):
 
         tool.assert_awaited_once_with(
             empresa_id=42, store_id=1, batch_id=7, employee_id=9,
-            quantity=Decimal("3"), reason="vencido", observation=None,
+            quantity=Decimal("3"), reason="vencido", role="ESTOQUISTA", observation=None,
         )
         self.assertEqual(result["disposal_id"], 1)
 
