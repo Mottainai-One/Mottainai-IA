@@ -1,4 +1,5 @@
 """Operational contracts for safe health and container entrypoints."""
+import asyncio
 import io
 import json
 import unittest
@@ -200,13 +201,30 @@ class RagDocumentUploadRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.exception.status_code, 422)
 
 
+class FakeIdempotencyRedis:
+    """In-memory stand-in for app.database.redis_client.get_redis(), just
+    the two calls app/cache/idempotency.py makes."""
+
+    def __init__(self):
+        self.store: dict[str, str] = {}
+
+    async def get(self, key):
+        return self.store.get(key)
+
+    async def set(self, key, value, ex=None):
+        self.store[key] = value
+
+
 class EmployeeWriteRoutesTests(unittest.IsolatedAsyncioTestCase):
     async def test_descartar_lote_calls_the_tool_with_the_authenticated_employee(self):
         tool = AsyncMock(return_value={"disposal_id": 1, "new_inventory_balance": Decimal("2")})
         body = DescartarLoteRequest(store_id=1, batch_id=7, quantity=Decimal("3"), reason="vencido")
 
-        with patch("app.tools.postgres_tools.discard_batch", new=tool):
-            result = await descartar_lote(body, AuthContext(usuario_id=9, empresa_id=42, role="ESTOQUISTA"))
+        with patch("app.tools.postgres_tools.discard_batch", new=tool), \
+                patch("app.cache.idempotency.get_redis", return_value=FakeIdempotencyRedis()):
+            result = await descartar_lote(
+                body, AuthContext(usuario_id=9, empresa_id=42, role="ESTOQUISTA"), "disposal-key-1",
+            )
 
         tool.assert_awaited_once_with(
             empresa_id=42, store_id=1, batch_id=7, employee_id=9,
@@ -215,21 +233,55 @@ class EmployeeWriteRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["disposal_id"], 1)
 
     async def test_descartar_lote_returns_404_when_inventory_not_found(self):
-        with patch("app.tools.postgres_tools.discard_batch", new=AsyncMock(side_effect=ValueError("não encontrado"))):
+        with patch("app.tools.postgres_tools.discard_batch", new=AsyncMock(side_effect=ValueError("não encontrado"))), \
+                patch("app.cache.idempotency.get_redis", return_value=FakeIdempotencyRedis()):
             with self.assertRaises(HTTPException) as context:
                 await descartar_lote(
                     DescartarLoteRequest(store_id=1, batch_id=7, quantity=Decimal("3"), reason="vencido"),
                     AuthContext(usuario_id=9, empresa_id=42, role="ESTOQUISTA"),
+                    "disposal-key-2",
                 )
 
         self.assertEqual(context.exception.status_code, 404)
+
+    async def test_descartar_lote_rejects_a_malformed_idempotency_key(self):
+        with patch("app.cache.idempotency.get_redis", return_value=FakeIdempotencyRedis()):
+            with self.assertRaises(HTTPException) as context:
+                await descartar_lote(
+                    DescartarLoteRequest(store_id=1, batch_id=7, quantity=Decimal("3"), reason="vencido"),
+                    AuthContext(usuario_id=9, empresa_id=42, role="ESTOQUISTA"),
+                    "cross:tenant",
+                )
+
+        self.assertEqual(context.exception.status_code, 400)
+
+    async def test_descartar_lote_replays_the_cached_result_on_a_repeated_key(self):
+        tool = AsyncMock(return_value={"disposal_id": 1, "new_inventory_balance": Decimal("2")})
+        body = DescartarLoteRequest(store_id=1, batch_id=7, quantity=Decimal("3"), reason="vencido")
+        redis = FakeIdempotencyRedis()
+
+        with patch("app.tools.postgres_tools.discard_batch", new=tool), \
+                patch("app.cache.idempotency.get_redis", return_value=redis):
+            first = await descartar_lote(
+                body, AuthContext(usuario_id=9, empresa_id=42, role="ESTOQUISTA"), "same-key",
+            )
+            second = await descartar_lote(
+                body, AuthContext(usuario_id=9, empresa_id=42, role="ESTOQUISTA"), "same-key",
+            )
+
+        tool.assert_awaited_once()  # the second call did NOT re-run the discard
+        self.assertEqual(second, first)
+        self.assertIsInstance(second["new_inventory_balance"], Decimal)  # not degraded to str/float by the cache round-trip
 
     async def test_receber_mercadoria_calls_the_tool_with_the_authenticated_employee(self):
         tool = AsyncMock(return_value={"new_inventory_balance": Decimal("50")})
         body = ReceberMercadoriaRequest(store_id=1, batch_id=7, quantity=Decimal("20"))
 
-        with patch("app.tools.postgres_tools.receive_inventory", new=tool):
-            result = await receber_mercadoria(body, AuthContext(usuario_id=9, empresa_id=42, role="GERENTE"))
+        with patch("app.tools.postgres_tools.receive_inventory", new=tool), \
+                patch("app.cache.idempotency.get_redis", return_value=FakeIdempotencyRedis()):
+            result = await receber_mercadoria(
+                body, AuthContext(usuario_id=9, empresa_id=42, role="GERENTE"), "receipt-key-1",
+            )
 
         tool.assert_awaited_once_with(
             empresa_id=42, store_id=1, batch_id=7, employee_id=9,
@@ -238,14 +290,54 @@ class EmployeeWriteRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["new_inventory_balance"], Decimal("50"))
 
     async def test_receber_mercadoria_returns_404_when_inventory_not_found(self):
-        with patch("app.tools.postgres_tools.receive_inventory", new=AsyncMock(side_effect=ValueError("não encontrado"))):
+        with patch("app.tools.postgres_tools.receive_inventory", new=AsyncMock(side_effect=ValueError("não encontrado"))), \
+                patch("app.cache.idempotency.get_redis", return_value=FakeIdempotencyRedis()):
             with self.assertRaises(HTTPException) as context:
                 await receber_mercadoria(
                     ReceberMercadoriaRequest(store_id=1, batch_id=7, quantity=Decimal("20")),
                     AuthContext(usuario_id=9, empresa_id=42, role="GERENTE"),
+                    "receipt-key-2",
                 )
 
         self.assertEqual(context.exception.status_code, 404)
+
+    async def test_idempotency_keys_do_not_collide_across_tenants(self):
+        tool = AsyncMock(side_effect=[
+            {"disposal_id": 1, "new_inventory_balance": Decimal("2")},
+            {"disposal_id": 2, "new_inventory_balance": Decimal("9")},
+        ])
+        body = DescartarLoteRequest(store_id=1, batch_id=7, quantity=Decimal("3"), reason="vencido")
+        redis = FakeIdempotencyRedis()
+
+        with patch("app.tools.postgres_tools.discard_batch", new=tool), \
+                patch("app.cache.idempotency.get_redis", return_value=redis):
+            tenant_a = await descartar_lote(
+                body, AuthContext(usuario_id=9, empresa_id=1, role="ESTOQUISTA"), "same-key",
+            )
+            tenant_b = await descartar_lote(
+                body, AuthContext(usuario_id=9, empresa_id=2, role="ESTOQUISTA"), "same-key",
+            )
+
+        self.assertEqual(tool.await_count, 2)  # same key, different tenant -> both ran
+        self.assertEqual(tenant_a["disposal_id"], 1)
+        self.assertEqual(tenant_b["disposal_id"], 2)
+
+    async def test_descartar_lote_rejects_the_write_when_redis_is_unreachable(self):
+        tool = AsyncMock(return_value={"disposal_id": 1, "new_inventory_balance": Decimal("2")})
+        body = DescartarLoteRequest(store_id=1, batch_id=7, quantity=Decimal("3"), reason="vencido")
+
+        class BrokenRedis:
+            async def get(self, key):
+                raise ConnectionError("redis down")
+
+        with patch("app.tools.postgres_tools.discard_batch", new=tool), \
+                patch("app.cache.idempotency.get_redis", return_value=BrokenRedis()):
+            with self.assertRaises(ConnectionError):
+                await descartar_lote(
+                    body, AuthContext(usuario_id=9, empresa_id=42, role="ESTOQUISTA"), "some-key",
+                )
+
+        tool.assert_not_awaited()  # fail-closed: the write never ran
 
 
 class LogoutRouteTests(unittest.IsolatedAsyncioTestCase):
@@ -365,6 +457,23 @@ class ProtectedOperationalRoutesTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(context.exception.status_code, 503)
         self.assertNotIn("provider blocked", context.exception.detail)
+
+    async def test_chat_times_out_a_stuck_graph_run(self):
+        async def _hangs(*args, **kwargs):
+            await asyncio.sleep(10)
+
+        with (
+            patch("interfaces.api.main.mottainai_graph.ainvoke", new=_hangs),
+            patch("interfaces.api.main.settings.chat_timeout_seconds", 0.01),
+        ):
+            with self.assertRaises(HTTPException) as context:
+                await chat(
+                    ChatRequest(message="teste", session_id="timeout-check"),
+                    background_tasks=__import__("fastapi").BackgroundTasks(),
+                    principal=AuthContext(usuario_id=7, empresa_id=42, role="CLIENTE"),
+                )
+
+        self.assertEqual(context.exception.status_code, 504)
 
     async def test_shelf_analysis_rejects_session_from_another_principal(self):
         with patch(
