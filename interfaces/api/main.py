@@ -611,7 +611,7 @@ async def descartar_lote(
     time — the database has no way to tell "the same disposal, resent"
     from "a second, distinct disposal".
     """
-    from app.tools.postgres_tools import discard_batch
+    from app.tools.postgres_tools import DisposalCeilingExceeded, discard_batch
 
     async def _discard() -> dict:
         try:
@@ -622,10 +622,13 @@ async def descartar_lote(
                 employee_id=principal.usuario_id,
                 quantity=body.quantity,
                 reason=body.reason,
+                role=principal.role,
                 observation=body.observation,
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except DisposalCeilingExceeded as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
     try:
         return await run_idempotent(principal.empresa_id, idempotency_key, _discard)
@@ -731,6 +734,25 @@ async def upload_rag_document(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     return result
+
+
+@app.delete("/rag/documents/{slug}", tags=["RAG"])
+async def delete_rag_document(
+    slug: str,
+    principal: Annotated[AuthContext, Depends(require_roles("GERENTE", "DONO"))],
+):
+    """
+    Deletes a document and its chunks from the RAG knowledge base.
+    Restricted to GERENTE/DONO, same as uploading — deletion has no undo,
+    and a wrongly (or adversarially) deleted document silently degrades
+    every user's RAG grounding at this company until someone notices.
+    """
+    from app.rag.ingestion import DocumentNotFoundError, delete_document
+
+    try:
+        return await delete_document(principal.empresa_id, slug)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @app.post("/shelf/analyze", tags=["Prateleira"])
