@@ -1,7 +1,8 @@
 """Dependencies shared by the agents, without assembling the graph."""
 from __future__ import annotations
 
-from typing import NotRequired, TypedDict
+import asyncio
+from typing import Any, NotRequired, TypedDict
 
 import httpx
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -41,6 +42,28 @@ class MottainaiState(TypedDict):
     node_latencies_ms: dict[str, float]
     tool_runs: NotRequired[list[dict]]  # accumulated by agent nodes, flushed once in main.py
     routing_log: NotRequired[dict]  # set by node_supervisor_route, flushed once in main.py
+
+
+async def gather_or_raise(*coros: Any) -> list[Any]:
+    """asyncio.gather(*coros, return_exceptions=True), then re-raises the
+    first exception found once every coroutine has finished.
+
+    Plain asyncio.gather(*coros) (return_exceptions=False, the default)
+    propagates the first exception as soon as it happens, but — per
+    asyncio's own docs — leaves every other awaitable running in the
+    background, uncancelled and unawaited. Sequential `await` calls (what
+    every agent node did before this) never had that failure mode: one
+    call failing simply meant the ones after it never started. Fanning
+    those same calls out with gather() reintroduces it unless exceptions
+    are collected instead of raised immediately — this restores today's
+    behavior (any one tool failing fails the whole node) without the
+    extra background tasks.
+    """
+    results = await asyncio.gather(*coros, return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    return results
 
 
 def get_llm_model_label() -> str:
