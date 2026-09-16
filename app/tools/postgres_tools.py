@@ -14,9 +14,10 @@ etc.) and the dict keys returned by get_shelf_inventory_crosscheck
 consumed by other code and by the agents' LLM prompts — they are kept in
 Portuguese, not translated as part of this pass.
 """
+import asyncio
 import logging
 from decimal import Decimal
-from typing import Any
+from typing import Any, Awaitable, TypeVar
 
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
@@ -27,6 +28,26 @@ from config.settings import get_settings
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+# Bounds how many of THIS app's own calls into these functions can be
+# waiting on a connection at once. Agent nodes now fan several of these
+# out together via asyncio.gather (app/agents/runtime.gather_or_raise) —
+# without a limit, a burst of concurrent /chat requests could ask the
+# pool (config/settings.py's postgres_pool_size + postgres_max_overflow)
+# for more connections than it can ever hand out, which is just
+# NullPool's old per-call wait again, moved from "opening a connection"
+# to "waiting on pool_timeout". Sized to the pool's total real capacity,
+# not to any one node's call count.
+pg_fanout_semaphore = asyncio.Semaphore(settings.postgres_pool_size + settings.postgres_max_overflow)
+
+
+async def guarded(call: Awaitable[T]) -> T:
+    """Wrap a Postgres call with this (before passing it to timed_tool_call)
+    in any code that fans multiple such calls out concurrently."""
+    async with pg_fanout_semaphore:
+        return await call
 
 
 @retry(

@@ -28,12 +28,17 @@ import json
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from app.agents.runtime import MottainaiState, get_llm
+from app.agents.runtime import MottainaiState, gather_or_raise, get_llm
 from app.memory.long_term import format_memory_for_prompt
 from app.memory.short_term import get_recent_vision_analyses
 from app.observability.tool_runs import timed_tool_call
 from app.rag.retriever import retrieve_with_sources
-from app.tools.postgres_tools import get_expiring_batches, get_inventory_status, get_stock_alerts
+from app.tools.postgres_tools import (
+    get_expiring_batches,
+    get_inventory_status,
+    get_stock_alerts,
+    guarded,
+)
 from app.tools.redis_tools import format_notifications_for_agent, get_inbox
 
 # Every other block in the operational context is bounded — alerts and
@@ -70,33 +75,44 @@ async def node_agente_funcionario(state: MottainaiState) -> MottainaiState:
     usuario_id = state["usuario_id"]
     tool_runs: list[dict] = []
 
-    # Operational queries and notifications scoped by the authenticated context.
-    alerts_data = await timed_tool_call(
-        tool_runs, "get_stock_alerts", get_stock_alerts(empresa_id, limit=5),
-        input={"empresa_id": empresa_id, "limit": 5},
-    )
-    inventory_data = await timed_tool_call(
-        tool_runs, "get_inventory_status", get_inventory_status(empresa_id),
-        input={"empresa_id": empresa_id},
-    )
-    expiring_data = await timed_tool_call(
-        tool_runs, "get_expiring_batches", get_expiring_batches(empresa_id, days_ahead=7),
-        input={"empresa_id": empresa_id, "days_ahead": 7},
-    )
-    notifications = await timed_tool_call(
-        tool_runs, "get_inbox", get_inbox(empresa_id, usuario_id, limit=5),
-        input={"empresa_id": empresa_id, "usuario_id": usuario_id, "limit": 5},
-    )
-    vision_analyses = await timed_tool_call(
-        tool_runs, "get_recent_vision_analyses",
-        get_recent_vision_analyses(state["session_id"], limit=3),
-        input={"session_id": state["session_id"], "limit": 3},
-    )
-
-    # RAG: manual/procedures
-    rag_context, sources = await timed_tool_call(
-        tool_runs, "retrieve_with_sources", retrieve_with_sources(query, empresa_id),
-        input={"query": query, "empresa_id": empresa_id},
+    # Operational queries, notifications and RAG are independent of each
+    # other (none consumes another's result), so they run concurrently.
+    # format_notifications_for_agent below is the one exception — it
+    # needs `notifications` already resolved, so it stays sequential,
+    # after this gather. get_stock_alerts/get_inventory_status/
+    # get_expiring_batches go through guarded() (app/tools/
+    # postgres_tools.py) to bound how many of this node's own Postgres
+    # calls can be in flight at once; get_inbox (Redis), the vision
+    # lookup and retrieve_with_sources (Mongo) have their own separate
+    # connection pools and don't need it.
+    (
+        alerts_data, inventory_data, expiring_data, notifications, vision_analyses, (rag_context, sources),
+    ) = await gather_or_raise(
+        timed_tool_call(
+            tool_runs, "get_stock_alerts", guarded(get_stock_alerts(empresa_id, limit=5)),
+            input={"empresa_id": empresa_id, "limit": 5},
+        ),
+        timed_tool_call(
+            tool_runs, "get_inventory_status", guarded(get_inventory_status(empresa_id)),
+            input={"empresa_id": empresa_id},
+        ),
+        timed_tool_call(
+            tool_runs, "get_expiring_batches", guarded(get_expiring_batches(empresa_id, days_ahead=7)),
+            input={"empresa_id": empresa_id, "days_ahead": 7},
+        ),
+        timed_tool_call(
+            tool_runs, "get_inbox", get_inbox(empresa_id, usuario_id, limit=5),
+            input={"empresa_id": empresa_id, "usuario_id": usuario_id, "limit": 5},
+        ),
+        timed_tool_call(
+            tool_runs, "get_recent_vision_analyses",
+            get_recent_vision_analyses(state["session_id"], limit=3),
+            input={"session_id": state["session_id"], "limit": 3},
+        ),
+        timed_tool_call(
+            tool_runs, "retrieve_with_sources", retrieve_with_sources(query, empresa_id),
+            input={"query": query, "empresa_id": empresa_id},
+        ),
     )
 
     # Formats the operational context (kept in Portuguese, see module docstring).
