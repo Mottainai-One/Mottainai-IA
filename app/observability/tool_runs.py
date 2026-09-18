@@ -25,8 +25,10 @@ from app.database.mongo import get_mongo_db
 T = TypeVar("T")
 
 
-def _as_object(value: Any, key: str = "value") -> dict | None:
-    """input/output/error are bsonType object|null in tool_runs' $jsonSchema.
+def as_object(value: Any, key: str = "value") -> dict | None:
+    """input/output/error are bsonType object|null in tool_runs' $jsonSchema
+    (and skill_executions' — app/observability/skill_executions.py reuses
+    this directly rather than duplicating it, same reasoning below).
 
     Postgres tool results carry types BSON cannot encode natively —
     get_kpis() returns Decimal, several tools return datetime — which made
@@ -75,15 +77,15 @@ async def timed_tool_call(
     except Exception as exc:
         tool_runs.append({
             "tool": tool, "status": "error",
-            "input": _as_object(input), "output": None,
-            "error": _as_object(str(exc), key="message"),
+            "input": as_object(input), "output": None,
+            "error": as_object(str(exc), key="message"),
             "latency": round(perf_counter() - started, 4),
             "startedAt": started_at, "finishedAt": datetime.now(timezone.utc),
         })
         raise
     tool_runs.append({
         "tool": tool, "status": "success",
-        "input": _as_object(input), "output": _as_object(result),
+        "input": as_object(input), "output": as_object(result),
         "error": None,
         "latency": round(perf_counter() - started, 4),
         "startedAt": started_at, "finishedAt": datetime.now(timezone.utc),

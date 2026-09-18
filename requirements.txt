@@ -44,6 +44,7 @@ PyJWT==2.10.1
 groq==0.37.1
 openai==2.27.0
 truststore==0.9.2
+jsonschema==4.23.0
 
 # --- Dev tools ---
 ruff==0.16.4

@@ -1736,6 +1736,245 @@
       }
     }
   },
+  "skill_executions": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "empresaId",
+          "usuarioId",
+          "sessionId",
+          "skill",
+          "version",
+          "status",
+          "startedAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "empresaId": {
+            "bsonType": "int"
+          },
+          "usuarioId": {
+            "bsonType": "int"
+          },
+          "sessionId": {
+            "bsonType": "string"
+          },
+          "conversationId": {
+            "bsonType": [
+              "objectId",
+              "null"
+            ]
+          },
+          "skill": {
+            "bsonType": "string"
+          },
+          "version": {
+            "bsonType": "string"
+          },
+          "status": {
+            "enum": [
+              "success",
+              "denied",
+              "invalid_input",
+              "invalid_output",
+              "error",
+              "timeout"
+            ]
+          },
+          "input": {
+            "bsonType": [
+              "object",
+              "null"
+            ]
+          },
+          "output": {
+            "bsonType": [
+              "object",
+              "null"
+            ]
+          },
+          "error": {
+            "bsonType": [
+              "object",
+              "null"
+            ]
+          },
+          "latency": {
+            "bsonType": [
+              "double",
+              "null"
+            ]
+          },
+          "startedAt": {
+            "bsonType": "date"
+          },
+          "finishedAt": {
+            "bsonType": [
+              "date",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ix_skill_executions_empresa_skill_startedAt": {
+        "key": [
+          [
+            "empresaId",
+            1
+          ],
+          [
+            "skill",
+            1
+          ],
+          [
+            "startedAt",
+            -1
+          ]
+        ]
+      },
+      "ix_skill_executions_status": {
+        "key": [
+          [
+            "status",
+            1
+          ]
+        ]
+      }
+    }
+  },
+  "skill_registry": {
+    "validator": {
+      "$jsonSchema": {
+        "bsonType": "object",
+        "required": [
+          "empresaId",
+          "name",
+          "version",
+          "description",
+          "owner",
+          "entrypoint",
+          "timeoutSeconds",
+          "scope",
+          "requiredRoles",
+          "inputSchema",
+          "outputSchema",
+          "active",
+          "createdAt"
+        ],
+        "properties": {
+          "_id": {
+            "bsonType": "objectId"
+          },
+          "empresaId": {
+            "bsonType": "int"
+          },
+          "name": {
+            "bsonType": "string"
+          },
+          "version": {
+            "bsonType": "string"
+          },
+          "description": {
+            "bsonType": "string"
+          },
+          "owner": {
+            "bsonType": "string"
+          },
+          "entrypoint": {
+            "bsonType": "string"
+          },
+          "timeoutSeconds": {
+            "bsonType": "double"
+          },
+          "maxRetries": {
+            "bsonType": [
+              "int",
+              "null"
+            ]
+          },
+          "scope": {
+            "enum": [
+              "read_only",
+              "write_with_approval"
+            ]
+          },
+          "requiredRoles": {
+            "bsonType": "array",
+            "items": {
+              "bsonType": "string"
+            }
+          },
+          "inputSchema": {
+            "bsonType": "object"
+          },
+          "outputSchema": {
+            "bsonType": "object"
+          },
+          "tags": {
+            "bsonType": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "bsonType": "string"
+            }
+          },
+          "active": {
+            "bsonType": "bool"
+          },
+          "createdAt": {
+            "bsonType": "date"
+          },
+          "updatedAt": {
+            "bsonType": [
+              "date",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "validationLevel": "strict",
+    "validationAction": "error",
+    "indexes": {
+      "ux_skill_registry_empresa_name_version": {
+        "key": [
+          [
+            "empresaId",
+            1
+          ],
+          [
+            "name",
+            1
+          ],
+          [
+            "version",
+            1
+          ]
+        ],
+        "unique": true
+      },
+      "ix_skill_registry_empresa_active": {
+        "key": [
+          [
+            "empresaId",
+            1
+          ],
+          [
+            "active",
+            1
+          ]
+        ]
+      }
+    }
+  },
   "tool_permissions": {
     "validator": {
       "$jsonSchema": {
