@@ -6,8 +6,9 @@ from typing import Any, NotRequired, TypedDict
 
 import httpx
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.runnables import Runnable
+from langchain_core.tools import BaseTool
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 
@@ -106,6 +107,71 @@ def _build_llm(temperature: float) -> BaseChatModel:
         http_client=_http_client,
         http_async_client=_http_async_client,
     )
+
+
+async def run_agent_with_tools(
+    tools: list[BaseTool],
+    messages: list[BaseMessage],
+    *,
+    temperature: float = 0.3,
+    max_iterations: int | None = None,
+) -> AIMessage:
+    """
+    Native tool calling: binds `tools` to a fresh chat model, then loops —
+    send the conversation, run whatever tools the model asks for, feed
+    their results back as ToolMessages, ask again — until the model
+    answers without requesting another tool call, or `max_iterations`
+    rounds of tool calls have happened
+    (settings.agent_tool_calling_max_iterations by default).
+
+    Builds its own model rather than taking one from get_llm(): bind_tools
+    must run on the raw chat model, and get_llm() returns a RunnableRetry
+    wrapper that doesn't expose it (verified directly — RunnableRetry has
+    no bind_tools). Retry is applied after binding instead, once here,
+    with the exact same settings get_llm() uses.
+
+    A tool call that raises is not re-raised here: its error is fed back
+    to the model as that tool's result (same as any other tool-calling
+    loop — LangGraph's own ToolNode does the same by default), so the
+    model can tell the user the lookup failed instead of the whole
+    request 500ing over one flaky call. It is still recorded in
+    tool_runs as status="error" by timed_tool_call before the exception
+    reaches here.
+
+    If max_iterations is exhausted, makes one final call with no tools
+    bound, forcing a direct answer from whatever was gathered so far
+    instead of silently returning a tool-call request as if it were the
+    answer.
+    """
+    settings = get_settings()
+    if max_iterations is None:
+        max_iterations = settings.agent_tool_calling_max_iterations
+
+    raw_llm = _build_llm(temperature)
+    retry_kwargs = {"stop_after_attempt": settings.llm_max_retries, "wait_exponential_jitter": True}
+    bound_llm = raw_llm.bind_tools(tools).with_retry(**retry_kwargs)
+    plain_llm = raw_llm.with_retry(**retry_kwargs)
+
+    tools_by_name = {tool.name: tool for tool in tools}
+    conversation = list(messages)
+
+    for _ in range(max_iterations):
+        response = await bound_llm.ainvoke(conversation)
+        if not response.tool_calls:
+            return response
+        conversation.append(response)
+        for call in response.tool_calls:
+            tool = tools_by_name.get(call["name"])
+            if tool is None:
+                content = f"Ferramenta desconhecida: {call['name']}"
+            else:
+                try:
+                    content = await tool.ainvoke(call["args"])
+                except Exception as exc:
+                    content = f"Erro ao executar {call['name']}: {exc}"
+            conversation.append(ToolMessage(content=str(content), tool_call_id=call["id"]))
+
+    return await plain_llm.ainvoke(conversation)
 
 
 def get_llm(temperature: float = 0.3) -> Runnable:

@@ -77,6 +77,24 @@ class Settings(BaseSettings):
     # (timeout, rate limit, 5xx error) with exponential backoff + jitter.
     llm_max_retries: int = 3
 
+    # Native tool calling (app/agents/tools_bridge.py, app/agents/runtime.
+    # run_agent_with_tools): lets the Employee/Owner agents' LLM call
+    # decide which read-only queries it needs instead of the node always
+    # fetching a fixed set before ever talking to the model. Off by
+    # default — this changes the hot chat path, so it ships dark and is
+    # opt-in per environment, flippable back without a redeploy if it
+    # misbehaves.
+    native_tool_calling_enabled: bool = False
+    # Rounds of tool-calling the model gets per message before being
+    # forced to answer with whatever it already gathered. Bounds a model
+    # that keeps requesting more tools instead of answering.
+    agent_tool_calling_max_iterations: int = 3
+    # Ceiling on how many tools one agent call binds — not enforced by
+    # today's agents (funcionario: 4, dono: 5), but a deliberate trip
+    # wire so a future addition needing more than this gets a reviewed
+    # decision instead of silently growing the toolkit.
+    agent_tool_calling_max_tools: int = 8
+
     # Output cap sent to the provider. Left implicit, the client default
     # (3072 tokens) silently truncated the Predictive Engine's structured
     # JSON mid-object, which the Judge then correctly rejected as malformed.

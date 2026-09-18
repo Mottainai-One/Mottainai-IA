@@ -22,13 +22,25 @@ to the employee in text, so it is the natural place to surface it.
 
 Note: SYSTEM_PROMPT and the operational context block fed to the LLM are
 deliberately kept in Portuguese, same as the other agents.
+
+Two code paths, chosen by settings.native_tool_calling_enabled (off by
+default — see config/settings.py):
+- _legacy (today's behavior): always fetches every data source below,
+  then hands the LLM one finished prompt with all of it inlined.
+- _native: exposes the same read-only queries as LangChain tools
+  (app/agents/tools_bridge.py) and lets the model decide which ones it
+  actually needs for a given question. get_inbox and the vision recap
+  are NOT in that toolkit (see tools_bridge.py) and stay always-fetched
+  context in both paths — the plan this shipped from names exactly
+  eight read-only tools across both agents, and neither of those two
+  is among them.
 """
 import json
 
-from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from app.agents.runtime import MottainaiState, gather_or_raise, get_llm
+from app.agents.runtime import MottainaiState, gather_or_raise, get_llm, run_agent_with_tools
+from app.agents.tools_bridge import build_toolkit
 from app.memory.long_term import format_memory_for_prompt
 from app.memory.short_term import get_recent_vision_analyses
 from app.observability.tool_runs import timed_tool_call
@@ -40,6 +52,7 @@ from app.tools.postgres_tools import (
     guarded,
 )
 from app.tools.redis_tools import format_notifications_for_agent, get_inbox
+from config.settings import get_settings
 
 # Every other block in the operational context is bounded — alerts and
 # notifications by their query's `limit`, vision analyses by limit=3,
@@ -67,9 +80,23 @@ Suas responsabilidades:
 - Você SÓ responde assuntos operacionais do Mottainai (estoque, inventário, alertas, procedimentos). Se a pergunta for sobre qualquer outro assunto, recuse educadamente e explique que só pode ajudar com temas operacionais do Mottainai.
 """
 
+# Appended to SYSTEM_PROMPT only in the native tool-calling path — the
+# legacy path already hands the model finished data, so it never needs
+# to be told tools exist.
+NATIVE_TOOL_GUIDANCE = """
+Você tem ferramentas para consultar dados operacionais em tempo real (alertas de estoque, situação do inventário, lotes vencendo, base de conhecimento). Use-as sempre que precisar de números concretos para responder — nunca invente dados. Pode chamar mais de uma ferramenta na mesma resposta se precisar."""
+
 
 async def node_agente_funcionario(state: MottainaiState) -> MottainaiState:
     """Employee Agent node in the LangGraph graph."""
+    if get_settings().native_tool_calling_enabled:
+        return await _node_agente_funcionario_native(state)
+    return await _node_agente_funcionario_legacy(state)
+
+
+async def _node_agente_funcionario_legacy(state: MottainaiState) -> MottainaiState:
+    """Today's behavior: always fetches every data source, then hands the
+    LLM one finished prompt with all of it inlined — see module docstring."""
     query = state["sanitized_input"]
     empresa_id = state["empresa_id"]
     usuario_id = state["usuario_id"]
@@ -148,8 +175,73 @@ NOTIFICAÇÕES:
         HumanMessage(content=query),
     ]
 
-    llm: BaseChatModel = get_llm(temperature=0.2)
+    llm = get_llm(temperature=0.2)
     response = await llm.ainvoke(messages)
+    content = response.content
+
+    usage = response.usage_metadata or {}
+    extra_sources = [{"type": "sql", "ref": "mottainai.alert + inventory + batch", "score": None}]
+    if vision_analyses:
+        extra_sources.append({"type": "other", "ref": "app.agents.visao (ai_results)", "score": None})
+
+    return {
+        **state,
+        "agent_response": content,
+        "sources": sources + extra_sources,
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+        "tool_runs": state.get("tool_runs", []) + tool_runs,
+    }
+
+
+async def _node_agente_funcionario_native(state: MottainaiState) -> MottainaiState:
+    """Native tool-calling path — see module docstring."""
+    query = state["sanitized_input"]
+    empresa_id = state["empresa_id"]
+    usuario_id = state["usuario_id"]
+    tool_runs: list[dict] = []
+    sources: list[dict] = []
+
+    # Not in the exposed toolkit (app/agents/tools_bridge.py) — these stay
+    # always-fetched context in both paths, not something the model
+    # decides whether to check.
+    notifications, vision_analyses = await gather_or_raise(
+        timed_tool_call(
+            tool_runs, "get_inbox", get_inbox(empresa_id, usuario_id, limit=5),
+            input={"empresa_id": empresa_id, "usuario_id": usuario_id, "limit": 5},
+        ),
+        timed_tool_call(
+            tool_runs, "get_recent_vision_analyses",
+            get_recent_vision_analyses(state["session_id"], limit=3),
+            input={"session_id": state["session_id"], "limit": 3},
+        ),
+    )
+    notifications_text = await timed_tool_call(
+        tool_runs, "format_notifications_for_agent",
+        format_notifications_for_agent(notifications), input=None,
+    )
+
+    tools = build_toolkit(
+        ["get_stock_alerts", "get_inventory_status", "get_expiring_batches", "retrieve_with_sources"],
+        empresa_id=empresa_id, tool_runs=tool_runs, sources_acc=sources,
+    )
+
+    mem_context = format_memory_for_prompt(state["memory"])
+    vision_text = json.dumps(vision_analyses, default=str, ensure_ascii=False, indent=2)
+    messages = [
+        SystemMessage(
+            content=(
+                f"{SYSTEM_PROMPT}\n{NATIVE_TOOL_GUIDANCE}"
+                f"\n\n--- Memória do usuário ---\n{mem_context}"
+                f"\n\n--- Notificações ---\n{notifications_text}"
+                f"\n\n--- Análises de prateleira recentes nesta conversa ---\n{vision_text}"
+            )
+        ),
+        *state["history"][-8:],
+        HumanMessage(content=query),
+    ]
+
+    response = await run_agent_with_tools(tools, messages, temperature=0.2)
     content = response.content
 
     usage = response.usage_metadata or {}
