@@ -22,7 +22,7 @@ SCHEMA_PATH = ROOT / "scripts" / "mongo" / "schema.json"
 COLLECTIONS_USED_BY_THE_APP = {
     "conversations", "messages", "memories", "metrics", "agent_executions",
     "prompt_evaluations", "rag_documents", "rag_chunks", "ai_results",
-    "agent_policies", "conversation_events",
+    "agent_policies", "conversation_events", "skill_registry", "skill_executions",
 }
 
 
