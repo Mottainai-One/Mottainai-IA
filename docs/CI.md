@@ -29,6 +29,9 @@ de marcá-lo. A validade das evidências e justificativas depende da revisão hu
 
 - Gitleaks v8.24.2 varre o histórico Git disponível, com saída redigida. Não exige
   licença da action comercial nem credenciais de provedores de IA.
+  `.gitleaksignore` registra somente o fingerprint histórico do exemplo textual
+  de JWT_SECRET no README, verificado como instrução para gerar um segredo.
+  Novas ocorrências não são ignoradas por essa exceção.
 - Os testes do próprio validador são executados com Python 3.13.
 - Quando houver Python em `app/`, `config/`, `interfaces/` ou `src/`, instala as
   dependências de `requirements.txt` ou `pyproject.toml` e executa unittest em

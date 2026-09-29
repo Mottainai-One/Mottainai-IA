@@ -1,1 +1,4 @@
-# Nenhuma exceção de credenciais configurada.
+# Falso positivo verificado: README usa a instrução literal
+# "gere-um-segredo-forte-de-32-caracteres-por-maquina", não uma chave real.
+# Exceção limitada a esta ocorrência histórica; demais achados seguem bloqueados.
+30a9ddf707eb9bb5042666d845e85ccc830a4072:README.md:generic-api-key:214
