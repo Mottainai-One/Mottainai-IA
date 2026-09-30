@@ -25,7 +25,7 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+        run: python -m pip install --upgrade pip && pip install --only-binary=:all: -r requirements.txt
 
       - name: Lint (ruff)
         run: ruff check app config interfaces scripts
@@ -204,8 +204,10 @@ jobs:
           set -e
           PATTERN="^(feat|fix|docs|style|refactor|test|chore|ci|perf|build|revert):"
 
+          # Validate the PR's own commit line. Imported or merged history on
+          # second parents was reviewed separately and may predate this rule.
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            COMMITS=$(git log --oneline ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
+            COMMITS=$(git log --first-parent --oneline ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
           else
             BEFORE_SHA="${{ github.event.before }}"
             if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
@@ -214,7 +216,7 @@ jobs:
               # diff against, so check only the commit that was just pushed.
               COMMITS=$(git log --oneline -1)
             else
-              COMMITS=$(git log --oneline "$BEFORE_SHA"..${{ github.sha }})
+              COMMITS=$(git log --first-parent --oneline "$BEFORE_SHA"..${{ github.sha }})
             fi
           fi
 

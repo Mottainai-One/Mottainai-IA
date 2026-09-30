@@ -1,4 +1,4 @@
-FROM python:3.13.0-slim-bookworm
+FROM python:3.13-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -12,7 +12,7 @@ RUN apt-get update \
     && useradd --create-home --uid 10001 appuser
 
 COPY requirements.txt ./
-RUN pip install --requirement requirements.txt
+RUN pip install --only-binary=:all: --requirement requirements.txt
 
 COPY --chown=appuser:appuser . .
 USER appuser
