@@ -28,6 +28,7 @@
 - Keep RAG sources in responses and message history.
 - Use `.env` only locally; never commit or expose credentials.
 - Reject startup when `JWT_SECRET` is missing, weak, or a documented placeholder.
+- Use `.github/pull_request_template.md` for every PR; keep its headings, order, and checklist labels.
 
 ## Minimum validation
 
