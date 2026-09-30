@@ -46,8 +46,7 @@ class MottainaiState(TypedDict):
 
 
 async def gather_or_raise(*coros: Any) -> list[Any]:
-    """asyncio.gather(*coros, return_exceptions=True), then re-raises the
-    first exception found once every coroutine has finished.
+    """Wait for every coroutine, then raise one failure or group all failures.
 
     Plain asyncio.gather(*coros) (return_exceptions=False, the default)
     propagates the first exception as soon as it happens, but — per
@@ -56,14 +55,15 @@ async def gather_or_raise(*coros: Any) -> list[Any]:
     every agent node did before this) never had that failure mode: one
     call failing simply meant the ones after it never started. Fanning
     those same calls out with gather() reintroduces it unless exceptions
-    are collected instead of raised immediately — this restores today's
-    behavior (any one tool failing fails the whole node) without the
-    extra background tasks.
+    are collected instead of raised immediately. A single failure keeps
+    its original type; concurrent failures remain available to callers.
     """
     results = await asyncio.gather(*coros, return_exceptions=True)
-    for result in results:
-        if isinstance(result, BaseException):
-            raise result
+    failures = [result for result in results if isinstance(result, BaseException)]
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        raise BaseExceptionGroup("Multiple concurrent tool calls failed", failures)
     return results
 
 

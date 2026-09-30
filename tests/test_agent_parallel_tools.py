@@ -154,6 +154,18 @@ class GatherOrRaiseTests(unittest.IsolatedAsyncioTestCase):
         # two running, unawaited, in the background.
         self.assertEqual(sorted(finished), ["a", "b"])
 
+    async def test_reports_every_concurrent_failure(self):
+        first = RuntimeError("postgres down")
+        second = ValueError("invalid RAG response")
+
+        async def fails(error):
+            raise error
+
+        with self.assertRaises(ExceptionGroup) as caught:
+            await gather_or_raise(fails(first), fails(second))
+
+        self.assertEqual(caught.exception.exceptions, (first, second))
+
 
 class PostgresFanoutSemaphoreTests(unittest.IsolatedAsyncioTestCase):
     async def test_guarded_serialises_calls_beyond_the_limit(self):
