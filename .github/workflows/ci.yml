@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checklist:
+    name: ${{ matrix.criterion }}
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        criterion:
+          - IA funciona sem erros
+          - Prompts documentados
+          - Respostas validadas
+          - Erros e timeouts tratados
+          - Agentes e ferramentas definidos
+          - RAG com contexto relevante
+          - Sem credenciais expostas
+          - Alterações documentadas na PR
+          - Tipos de fonte válidos
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Validar declaração no checklist da PR
+        env:
+          CRITERION: ${{ matrix.criterion }}
+        run: python3 scripts/ci/check_pr.py
+
+  secrets:
+    name: Varredura de credenciais (Gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verificar histórico sem imprimir segredos
+        run: >-
+          docker run --rm -v "$PWD:/repo:ro"
+          zricethezav/gitleaks:v8.24.2@sha256:b5918eb91b8d2473cec722f066abb4352e4ffdc4ec9f4283ec143aba9ec9ebc4
+          git /repo --redact --no-banner --verbose
+          --gitleaks-ignore-path /repo/.gitleaksignore
+
+  python:
+    name: Testes Python e infraestrutura do CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - name: Testar validador do checklist
+        run: python -m unittest discover -s tests/ci -v
+      - name: Detectar implementação da aplicação
+        id: app
+        shell: bash
+        run: |
+          if git ls-files '*.py' | grep -Eq '^(app|config|interfaces|src)/'; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'present=false' >> "$GITHUB_OUTPUT"
+            echo '### Testes da IA não executados: código da aplicação ausente.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Instalar dependências da aplicação
+        if: steps.app.outputs.present == 'true'
+        run: |
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          elif [ -f pyproject.toml ]; then
+            python -m pip install -e .
+          else
+            echo '::error::Código presente sem requirements.txt ou pyproject.toml.'
+            exit 1
+          fi
+      - name: Executar testes da aplicação (não aceita zero testes)
+        if: steps.app.outputs.present == 'true'
+        run: |
+          python - <<'PY'
+          import sys
+          import unittest
+          suite = unittest.defaultTestLoader.discover('tests', pattern='test_*.py')
+          if not suite.countTestCases():
+              sys.exit('Nenhum teste da aplicação encontrado em tests/.')
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          sys.exit(not result.wasSuccessful())
+          PY
