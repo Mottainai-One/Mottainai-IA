@@ -1,0 +1,889 @@
+"""Queries against the Mottainai v6 operational schema.
+
+Mostly read-only. The two write operations at the bottom (discard_batch,
+receive_inventory) are deliberately narrow: they act on an EXISTING
+batch/inventory row rather than creating new products or batches from
+scratch, and they lean on the schema's own fn_atomic_update_inventory
+stored procedure for the row-locked, version-checked balance update and
+its audit trail (mottainai.inventory_movement) instead of reimplementing
+that logic in Python.
+
+Note: SQL-computed status strings ('RUPTURA', 'ABAIXO_MINIMO', 'EXCESSO',
+etc.) and the dict keys returned by get_shelf_inventory_crosscheck
+("encontrados", "ausentes_esperados", "alertas_ativos") are a data contract
+consumed by other code and by the agents' LLM prompts — they are kept in
+Portuguese, not translated as part of this pass.
+"""
+import asyncio
+import logging
+from decimal import Decimal
+from typing import Any, Awaitable, TypeVar
+
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
+
+from app.database.postgres import get_pg_session
+from config.settings import get_settings
+
+settings = get_settings()
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+# Bounds how many of THIS app's own calls into these functions can be
+# waiting on a connection at once. Agent nodes now fan several of these
+# out together via asyncio.gather (app/agents/runtime.gather_or_raise) —
+# without a limit, a burst of concurrent /chat requests could ask the
+# pool (config/settings.py's postgres_pool_size + postgres_max_overflow)
+# for more connections than it can ever hand out, which is just
+# NullPool's old per-call wait again, moved from "opening a connection"
+# to "waiting on pool_timeout". Sized to the pool's total real capacity,
+# not to any one node's call count.
+pg_fanout_semaphore = asyncio.Semaphore(settings.postgres_pool_size + settings.postgres_max_overflow)
+
+
+async def guarded(call: Awaitable[T]) -> T:
+    """Wrap a Postgres call with this (before passing it to timed_tool_call)
+    in any code that fans multiple such calls out concurrently."""
+    async with pg_fanout_semaphore:
+        return await call
+
+
+@retry(
+    stop=stop_after_attempt(settings.postgres_max_retries),
+    wait=wait_exponential_jitter(),
+    retry=retry_if_exception_type(OperationalError),
+    reraise=True,
+    before_sleep=lambda retry_state: logger.warning(
+        "Postgres query failed (attempt %s/%s), retrying: %s",
+        retry_state.attempt_number, settings.postgres_max_retries, retry_state.outcome.exception(),
+    ),
+)
+async def _exec(
+    sql: str,
+    *,
+    empresa_id: int,
+    params: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Executes a query scoped to the authenticated tenant.
+
+    Retries on OperationalError (SQLAlchemy's category for a transient
+    connection failure — dropped connection, connection refused, timeout)
+    with exponential backoff + jitter, same pattern already used for LLM
+    provider calls (app/agents/runtime.get_llm). Every query here is a
+    read, so retrying is always safe — nothing here can double-apply a
+    side effect. Does NOT retry on query errors (bad SQL, a constraint
+    violation surfaced through a stored function) — those aren't transient.
+    """
+    if isinstance(empresa_id, bool) or empresa_id < 1:
+        raise ValueError("empresa_id must be a positive integer.")
+
+    query_params = {**(params or {}), "empresa_id": empresa_id}
+    async with get_pg_session() as session:
+        # The v6 operational schema applies RLS on company, retail_store,
+        # inventory and sales_transaction. The context is local to the
+        # transaction to avoid leaking the tenant across connections.
+        await session.execute(
+            text("SELECT set_config('app.current_company_id', CAST(:empresa_id AS TEXT), true)"),
+            {"empresa_id": str(empresa_id)},
+        )
+        result = await session.execute(text(sql), query_params)
+        cols = list(result.keys())
+        return [dict(zip(cols, row)) for row in result.fetchall()]
+
+
+async def get_stock_alerts(
+    empresa_id: int,
+    limit: int = 10,
+    store_id: int | None = None,
+) -> list[dict]:
+    """
+    Returns active stock alerts for a company.
+    Used by the Employee Agent and the Predictive Engine.
+    """
+    if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
+        raise ValueError("store_id must be a positive integer.")
+
+    store_filter = "AND a.store_id = :store_id" if store_id is not None else ""
+    sql = f"""
+        SELECT
+            a.alert_id        AS id,
+            a.alert_type      AS type,
+            a.priority,
+            a.status,
+            a.title,
+            a.description,
+            a.created_at,
+            rs.name           AS store_name
+        FROM mottainai.alert a
+        JOIN mottainai.retail_store rs ON rs.store_id = a.store_id
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        WHERE c.company_id = :empresa_id
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+          AND a.status = 'ACTIVE'
+          {store_filter}
+        ORDER BY
+            CASE a.priority
+                WHEN 'CRITICAL' THEN 1
+                WHEN 'HIGH'     THEN 2
+                WHEN 'MEDIUM'   THEN 3
+                ELSE 4
+            END,
+            a.created_at DESC
+        LIMIT :limit
+    """
+    params: dict[str, Any] = {"limit": limit}
+    if store_id is not None:
+        params["store_id"] = store_id
+    return await _exec(sql, empresa_id=empresa_id, params=params)
+
+
+async def get_expiring_batches(
+    empresa_id: int,
+    days_ahead: int = 7,
+    store_id: int | None = None,
+) -> list[dict]:
+    """
+    Returns batches with an upcoming expiration date.
+    Used by the Predictive Engine for loss risk detection.
+    """
+    if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
+        raise ValueError("store_id must be a positive integer.")
+
+    store_filter = "AND rs.store_id = :store_id" if store_id is not None else ""
+    sql = f"""
+        SELECT
+            b.batch_id,
+            b.batch_code,
+            b.expiration_date,
+            (b.expiration_date - CURRENT_DATE) AS days_to_expire,
+            COALESCE(SUM(i.current_quantity), 0) AS total_quantity,
+            p.name    AS product_name,
+            p.barcode AS barcode,
+            rs.store_id,
+            rs.name   AS store_name
+        FROM mottainai.batch b
+        JOIN mottainai.product p ON p.product_id = b.product_id
+        JOIN mottainai.inventory i ON i.batch_id = b.batch_id
+        JOIN mottainai.retail_store rs ON rs.store_id = i.store_id
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        WHERE c.company_id = :empresa_id
+          AND b.expiration_date BETWEEN CURRENT_DATE AND (CURRENT_DATE + CAST(:days_ahead AS INTEGER))
+          AND i.current_quantity > 0
+          AND b.active = TRUE
+          AND b.deleted_at IS NULL
+          AND i.deleted_at IS NULL
+          AND p.active = TRUE
+          AND p.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+          {store_filter}
+        GROUP BY
+            b.batch_id,
+            b.batch_code,
+            b.expiration_date,
+            p.name,
+            p.barcode,
+            rs.store_id,
+            rs.name
+        ORDER BY b.expiration_date ASC
+        LIMIT 20
+    """
+    params: dict[str, Any] = {"days_ahead": days_ahead}
+    if store_id is not None:
+        params["store_id"] = store_id
+    return await _exec(sql, empresa_id=empresa_id, params=params)
+
+
+async def get_sales_summary(
+    empresa_id: int,
+    days_back: int = 30,
+    store_id: int | None = None,
+) -> list[dict]:
+    """
+    Returns a per-product sales summary for the last `days_back` days.
+    Used by the Predictive Engine for demand forecasting.
+    """
+    if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
+        raise ValueError("store_id must be a positive integer.")
+
+    store_filter = "AND rs.store_id = :store_id" if store_id is not None else ""
+    sql = f"""
+        SELECT
+            p.product_id,
+            p.name        AS product_name,
+            p.barcode     AS barcode,
+            SUM(si.quantity_sold)          AS total_sold,
+            COUNT(DISTINCT st.sale_id)     AS transactions,
+            AVG(si.unit_price)             AS avg_price
+        FROM mottainai.sales_transaction st
+        JOIN mottainai.sale_item si ON si.sale_id = st.sale_id AND si.sale_date = st.sale_date
+        JOIN mottainai.product p ON p.product_id = si.product_id
+        JOIN mottainai.retail_store rs ON rs.store_id = st.store_id
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        WHERE c.company_id = :empresa_id
+          AND st.sale_date >= (CURRENT_DATE - CAST(:days_back AS INTEGER))
+          AND st.status = 'COMPLETED'
+          AND si.status = 'SOLD'
+          AND st.deleted_at IS NULL
+          AND p.active = TRUE
+          AND p.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+          {store_filter}
+        GROUP BY p.product_id, p.name, p.barcode
+        ORDER BY total_sold DESC
+        LIMIT 20
+    """
+    params: dict[str, Any] = {"days_back": days_back}
+    if store_id is not None:
+        params["store_id"] = store_id
+    return await _exec(sql, empresa_id=empresa_id, params=params)
+
+
+async def get_daily_sales_series(
+    empresa_id: int,
+    product_ids: list[int],
+    days_back: int = 28,
+    store_id: int | None = None,
+) -> list[dict]:
+    """
+    Per-product, per-day sold quantity for the given products over the last
+    `days_back` days. Used by the Predictive Engine to compute a real
+    moving-average/trend demand forecast (as opposed to guessing from a raw
+    aggregate dump).
+    """
+    if not product_ids:
+        return []
+    if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
+        raise ValueError("store_id must be a positive integer.")
+
+    store_filter = "AND rs.store_id = :store_id" if store_id is not None else ""
+    sql = f"""
+        SELECT
+            p.product_id,
+            CAST(st.sale_date AS DATE) AS sale_date,
+            SUM(si.quantity_sold) AS quantity_sold
+        FROM mottainai.sales_transaction st
+        JOIN mottainai.sale_item si ON si.sale_id = st.sale_id AND si.sale_date = st.sale_date
+        JOIN mottainai.product p ON p.product_id = si.product_id
+        JOIN mottainai.retail_store rs ON rs.store_id = st.store_id
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        WHERE c.company_id = :empresa_id
+          AND st.sale_date >= (CURRENT_DATE - CAST(:days_back AS INTEGER))
+          AND st.status = 'COMPLETED'
+          AND si.status = 'SOLD'
+          AND st.deleted_at IS NULL
+          AND p.product_id = ANY(:product_ids)
+          AND p.active = TRUE
+          AND p.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+          {store_filter}
+        GROUP BY p.product_id, CAST(st.sale_date AS DATE)
+        ORDER BY p.product_id, CAST(st.sale_date AS DATE)
+    """
+    params: dict[str, Any] = {"days_back": days_back, "product_ids": product_ids}
+    if store_id is not None:
+        params["store_id"] = store_id
+    return await _exec(sql, empresa_id=empresa_id, params=params)
+
+
+async def get_kpis(empresa_id: int) -> dict:
+    """
+    Consolidated management KPIs.
+    Used by the Owner Agent.
+    """
+    sql_revenue = """
+        SELECT COALESCE(SUM(si.subtotal), 0) AS revenue_30d
+        FROM mottainai.sales_transaction st
+        JOIN mottainai.sale_item si ON si.sale_id = st.sale_id AND si.sale_date = st.sale_date
+        JOIN mottainai.retail_store rs ON rs.store_id = st.store_id
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        WHERE c.company_id = :empresa_id
+          AND st.sale_date >= (CURRENT_DATE - INTERVAL '30 days')
+          AND st.status = 'COMPLETED'
+          AND si.status = 'SOLD'
+          AND st.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+    """
+    sql_losses = """
+        SELECT
+            COALESCE(SUM(di.disposed_quantity * b.unit_cost), 0) AS disposal_cost_30d
+        FROM mottainai.disposal d
+        JOIN mottainai.disposal_item di ON di.disposal_id = d.disposal_id
+        JOIN mottainai.batch b ON b.batch_id = di.batch_id
+        JOIN mottainai.retail_store rs ON rs.store_id = d.store_id
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        WHERE c.company_id = :empresa_id
+          AND d.created_at >= (CURRENT_DATE - CAST(30 AS INTEGER))
+          AND b.active = TRUE
+          AND b.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+    """
+    sql_alerts = """
+        SELECT COUNT(*) AS active_alerts
+        FROM mottainai.alert a
+        JOIN mottainai.retail_store rs ON rs.store_id = a.store_id
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        WHERE c.company_id = :empresa_id
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+          AND a.status = 'ACTIVE'
+    """
+
+    revenue = await _exec(sql_revenue, empresa_id=empresa_id)
+    losses = await _exec(sql_losses, empresa_id=empresa_id)
+    alerts = await _exec(sql_alerts, empresa_id=empresa_id)
+
+    return {
+        "revenue_30d": revenue[0]["revenue_30d"] if revenue else Decimal("0"),
+        "disposal_cost_30d": losses[0]["disposal_cost_30d"] if losses else Decimal("0"),
+        "active_alerts": int(alerts[0]["active_alerts"]) if alerts else 0,
+    }
+
+
+async def get_kpis_by_store(empresa_id: int, days_back: int = 30) -> list[dict]:
+    """
+    Per-store KPIs (revenue, disposal cost, active alerts) for benchmarking
+    stores within the same company. Used by the Owner Agent.
+    """
+    sql_revenue = """
+        SELECT
+            rs.store_id,
+            rs.name AS store_name,
+            COALESCE(SUM(si.subtotal), 0) AS revenue,
+            COUNT(DISTINCT st.sale_id) AS transactions
+        FROM mottainai.retail_store rs
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        LEFT JOIN mottainai.sales_transaction st
+            ON st.store_id = rs.store_id
+           AND st.sale_date >= (CURRENT_DATE - CAST(:days_back AS INTEGER))
+           AND st.status = 'COMPLETED'
+           AND st.deleted_at IS NULL
+        LEFT JOIN mottainai.sale_item si
+            ON si.sale_id = st.sale_id
+           AND si.sale_date = st.sale_date
+           AND si.status = 'SOLD'
+        WHERE c.company_id = :empresa_id
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+        GROUP BY rs.store_id, rs.name
+        ORDER BY revenue DESC
+    """
+    sql_losses = """
+        SELECT
+            rs.store_id,
+            COALESCE(SUM(di.disposed_quantity * b.unit_cost), 0) AS disposal_cost
+        FROM mottainai.retail_store rs
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        LEFT JOIN mottainai.disposal d
+            ON d.store_id = rs.store_id
+           AND d.created_at >= (CURRENT_DATE - CAST(:days_back AS INTEGER))
+        LEFT JOIN mottainai.disposal_item di ON di.disposal_id = d.disposal_id
+        LEFT JOIN mottainai.batch b
+            ON b.batch_id = di.batch_id
+           AND b.active = TRUE
+           AND b.deleted_at IS NULL
+        WHERE c.company_id = :empresa_id
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+        GROUP BY rs.store_id
+    """
+    sql_alerts = """
+        SELECT
+            rs.store_id,
+            COUNT(a.alert_id) AS active_alerts
+        FROM mottainai.retail_store rs
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        LEFT JOIN mottainai.alert a
+            ON a.store_id = rs.store_id
+           AND a.status = 'ACTIVE'
+        WHERE c.company_id = :empresa_id
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+        GROUP BY rs.store_id
+    """
+
+    revenue_rows = await _exec(sql_revenue, empresa_id=empresa_id, params={"days_back": days_back})
+    loss_rows = await _exec(sql_losses, empresa_id=empresa_id, params={"days_back": days_back})
+    alert_rows = await _exec(sql_alerts, empresa_id=empresa_id)
+
+    losses_by_store = {row["store_id"]: row["disposal_cost"] for row in loss_rows}
+    alerts_by_store = {row["store_id"]: row["active_alerts"] for row in alert_rows}
+
+    return [
+        {
+            "store_id": row["store_id"],
+            "store_name": row["store_name"],
+            "revenue": row["revenue"],
+            "transactions": row["transactions"],
+            "disposal_cost": losses_by_store.get(row["store_id"], Decimal("0")),
+            "active_alerts": int(alerts_by_store.get(row["store_id"], 0)),
+        }
+        for row in revenue_rows
+    ]
+
+
+async def get_inventory_status(empresa_id: int, store_id: int | None = None) -> list[dict]:
+    """
+    Current inventory status (stock quantity vs minimum).
+    Used by the Employee Agent.
+    """
+    if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
+        raise ValueError("store_id must be a positive integer.")
+
+    store_filter = "AND i.store_id = :store_id" if store_id is not None else ""
+    sql = f"""
+        SELECT
+            p.name        AS product_name,
+            p.barcode     AS barcode,
+            i.current_quantity   AS quantity,
+            i.minimum_quantity   AS min_quantity,
+            i.maximum_quantity   AS max_quantity,
+            CASE
+                WHEN i.current_quantity <= 0                          THEN 'RUPTURA'
+                WHEN i.current_quantity < i.minimum_quantity          THEN 'ABAIXO_MINIMO'
+                WHEN i.maximum_quantity IS NOT NULL
+                 AND i.current_quantity > i.maximum_quantity          THEN 'EXCESSO'
+                ELSE 'NORMAL'
+            END AS stock_status,
+            rs.name AS store_name
+        FROM mottainai.inventory i
+        JOIN mottainai.batch b ON b.batch_id = i.batch_id
+        JOIN mottainai.product p ON p.product_id = b.product_id
+        JOIN mottainai.retail_store rs ON rs.store_id = i.store_id
+        JOIN mottainai.company c ON c.company_id = rs.company_id
+        WHERE c.company_id = :empresa_id
+          AND c.active = TRUE
+          AND c.deleted_at IS NULL
+          AND rs.active = TRUE
+          AND rs.deleted_at IS NULL
+          AND i.deleted_at IS NULL
+          AND b.active = TRUE
+          AND b.deleted_at IS NULL
+          AND p.active = TRUE
+          AND p.deleted_at IS NULL
+          {store_filter}
+        ORDER BY
+            CASE
+                WHEN i.current_quantity <= 0                     THEN 1
+                WHEN i.current_quantity < i.minimum_quantity     THEN 2
+                ELSE 3
+            END
+        LIMIT 30
+    """
+    params: dict[str, Any] = {}
+    if store_id is not None:
+        params["store_id"] = store_id
+    return await _exec(sql, empresa_id=empresa_id, params=params)
+
+
+MAX_PRODUCT_NAME_CHARS = 80
+
+
+async def get_inventory_matches(
+    empresa_id: int,
+    product_names: list[str],
+    store_id: int | None = None,
+) -> dict[str, dict[str, Any]]:
+    """
+    Locates several shelf-detected products at once, within the authenticated
+    tenant. Returns {normalized name: match}, omitting names that match nothing.
+
+    One query for the whole list rather than one per name: the shelf
+    cross-check called the single-name lookup in a Python loop, and every
+    iteration was its own connection, its own `set_config` and its own
+    unindexable ILIKE scan — a photo with ten products cost eleven round
+    trips. The LATERAL subquery is the original single-name query verbatim,
+    run once per name by the database, so the per-name semantics are
+    unchanged: still LIMIT 1, still preferring an exact name match before
+    falling back to alphabetical order.
+    """
+    if store_id is not None and (isinstance(store_id, bool) or store_id < 1):
+        raise ValueError("store_id must be a positive integer.")
+
+    normalized = list(dict.fromkeys(
+        name.strip()[:MAX_PRODUCT_NAME_CHARS].lower()
+        for name in product_names
+        if name and name.strip()
+    ))
+    if not normalized:
+        return {}
+
+    store_filter = "AND i.store_id = :store_id" if store_id is not None else ""
+    sql = f"""
+        WITH company_inventory AS (
+            SELECT
+                i.batch_id,
+                i.current_quantity,
+                i.minimum_quantity
+            FROM mottainai.inventory i
+            JOIN mottainai.retail_store rs ON rs.store_id = i.store_id
+            JOIN mottainai.company c ON c.company_id = rs.company_id
+            WHERE c.company_id = :empresa_id
+              AND c.active = TRUE
+              AND c.deleted_at IS NULL
+              AND rs.active = TRUE
+              AND rs.deleted_at IS NULL
+              AND i.deleted_at IS NULL
+              {store_filter}
+        ),
+        wanted AS (
+            SELECT n AS wanted_name FROM unnest(CAST(:names AS text[])) AS t(n)
+        )
+        SELECT w.wanted_name, m.*
+        FROM wanted w
+        CROSS JOIN LATERAL (
+            SELECT
+                p.product_id AS id,
+                p.name,
+                p.barcode,
+                COALESCE(SUM(ci.current_quantity), 0) AS quantity,
+                COALESCE(SUM(ci.minimum_quantity), 0) AS min_quantity,
+                CASE
+                    WHEN COUNT(ci.batch_id) = 0 THEN 'SEM_INVENTARIO'
+                    WHEN COALESCE(SUM(ci.current_quantity), 0) <= 0 THEN 'RUPTURA'
+                    WHEN COALESCE(SUM(ci.current_quantity), 0) < COALESCE(SUM(ci.minimum_quantity), 0)
+                        THEN 'ABAIXO_MINIMO'
+                    ELSE 'OK'
+                END AS status
+            FROM mottainai.product p
+            LEFT JOIN mottainai.batch b
+              ON b.product_id = p.product_id
+             AND b.active = TRUE
+             AND b.deleted_at IS NULL
+            LEFT JOIN company_inventory ci ON ci.batch_id = b.batch_id
+            WHERE p.active = TRUE
+              AND p.deleted_at IS NULL
+              AND LOWER(p.name) ILIKE '%' || w.wanted_name || '%'
+            GROUP BY p.product_id, p.name, p.barcode
+            ORDER BY
+                CASE WHEN LOWER(p.name) = w.wanted_name THEN 0 ELSE 1 END,
+                p.name
+            LIMIT 1
+        ) m
+    """
+    params: dict[str, Any] = {"names": normalized}
+    if store_id is not None:
+        params["store_id"] = store_id
+
+    rows = await _exec(sql, empresa_id=empresa_id, params=params)
+    matches: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        match = {k: v for k, v in row.items() if k != "wanted_name"}
+        matches[row["wanted_name"]] = match
+    return matches
+
+
+async def get_inventory_match(
+    empresa_id: int,
+    product_name: str,
+    store_id: int | None = None,
+) -> dict[str, Any] | None:
+    """
+    Locates a product seen on the shelf within the authenticated tenant.
+
+    Thin wrapper over get_inventory_matches so both paths share one SQL
+    definition and cannot drift apart.
+    """
+    matches = await get_inventory_matches(empresa_id, [product_name], store_id)
+    return next(iter(matches.values()), None)
+
+
+async def get_shelf_inventory_crosscheck(
+    empresa_id: int,
+    store_id: int | None,
+    detected_products: list[str],
+) -> dict[str, list[dict[str, Any]]]:
+    """Cross-checks detected products against v6 schema stock and alerts."""
+    # One query for every detected product instead of one per product. The
+    # loop still walks `detected_products` in order so `found` keeps the order
+    # the products were detected in; only the lookup moved out of it.
+    # `seen_names` stays keyed on the untruncated name, because the
+    # missing-product check below does substring matching against it.
+    matches = await get_inventory_matches(empresa_id, detected_products, store_id)
+    found: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for product_name in detected_products:
+        normalized_name = product_name.strip()
+        if not normalized_name or normalized_name.lower() in seen_names:
+            continue
+        seen_names.add(normalized_name.lower())
+        match = matches.get(normalized_name[:MAX_PRODUCT_NAME_CHARS].lower())
+        if match:
+            found.append(match)
+
+    inventory = await get_inventory_status(empresa_id, store_id)
+    detected_names = {name.lower() for name in seen_names}
+    missing: list[dict[str, Any]] = []
+    seen_inventory: set[tuple[str, str]] = set()
+    for item in inventory:
+        if item["stock_status"] not in {"RUPTURA", "ABAIXO_MINIMO"}:
+            continue
+        product_name = item["product_name"]
+        key = (product_name.lower(), item["store_name"])
+        if key in seen_inventory or any(
+            product_name.lower() in name or name in product_name.lower()
+            for name in detected_names
+        ):
+            continue
+        seen_inventory.add(key)
+        missing.append(item)
+
+    return {
+        "encontrados": found,
+        "ausentes_esperados": missing,
+        "alertas_ativos": await get_stock_alerts(empresa_id, limit=10, store_id=store_id),
+    }
+
+
+def _validate_positive_int(value: Any, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{field_name} must be a positive integer.")
+
+
+async def _find_inventory(
+    session,
+    *,
+    empresa_id: int,
+    store_id: int,
+    batch_id: int,
+):
+    """Resolves (store_id, batch_id) to its inventory row (inventory_id,
+    current_quantity), scoped to the tenant. current_quantity is the
+    balance BEFORE any write this call is part of — discard_batch needs
+    it to check the disposal ceiling against what's on hand right now,
+    not the function's own post-decrement balance."""
+    row = (
+        await session.execute(
+            text("""
+                SELECT i.inventory_id, i.current_quantity
+                FROM mottainai.inventory i
+                JOIN mottainai.retail_store rs ON rs.store_id = i.store_id
+                JOIN mottainai.company c ON c.company_id = rs.company_id
+                WHERE i.batch_id = :batch_id
+                  AND i.store_id = :store_id
+                  AND c.company_id = :empresa_id
+                  AND i.deleted_at IS NULL
+                  AND rs.active = TRUE
+                  AND rs.deleted_at IS NULL
+                  AND c.active = TRUE
+                  AND c.deleted_at IS NULL
+            """),
+            {"batch_id": batch_id, "store_id": store_id, "empresa_id": empresa_id},
+        )
+    ).mappings().first()
+
+    if row is None:
+        raise ValueError(
+            f"No inventory record for batch_id={batch_id} at store_id={store_id} in this company."
+        )
+    return row
+
+
+class DisposalCeilingExceeded(Exception):
+    """A single disposal would remove more than settings.disposal_ceiling_percent
+    of the batch's current quantity, and the acting role isn't authorized
+    to do that alone (only GERENTE/DONO are)."""
+
+    def __init__(self, *, requested: Decimal, current_quantity: Decimal, ceiling_percent: float):
+        self.requested = requested
+        self.current_quantity = current_quantity
+        self.ceiling_percent = ceiling_percent
+        super().__init__(
+            f"Disposal of {requested} exceeds {ceiling_percent}% of the current "
+            f"balance ({current_quantity}); requires GERENTE or DONO approval."
+        )
+
+
+# Only these roles may discard more than settings.disposal_ceiling_percent of
+# a batch's current quantity in a single call — an authorization boundary,
+# so (like ROLE_TO_INTENT_AGENTS in app/agents/supervisor.py) it stays
+# hardcoded here rather than becoming app-configurable.
+_DISPOSAL_CEILING_EXEMPT_ROLES = {"GERENTE", "DONO"}
+
+
+async def discard_batch(
+    empresa_id: int,
+    store_id: int,
+    batch_id: int,
+    employee_id: int,
+    quantity: Decimal,
+    reason: str,
+    role: str,
+    observation: str | None = None,
+) -> dict:
+    """
+    Registers a batch disposal (descarte): creates the disposal + disposal_item
+    audit rows and atomically decrements the matching inventory row via the
+    schema's fn_atomic_update_inventory (row-locked, optimistic-version-checked,
+    writes its own inventory_movement row). Used by the Employee Agent.
+
+    Raises DisposalCeilingExceeded, before writing anything, if `quantity` is
+    more than settings.disposal_ceiling_percent of the batch's current
+    quantity and `role` isn't GERENTE/DONO — an ESTOQUISTA cannot single-
+    handedly discard most or all of a batch.
+    """
+    _validate_positive_int(store_id, "store_id")
+    _validate_positive_int(batch_id, "batch_id")
+    _validate_positive_int(employee_id, "employee_id")
+    if not reason or not reason.strip():
+        raise ValueError("reason is required.")
+    quantity = Decimal(str(quantity))
+    if quantity <= 0:
+        raise ValueError("quantity must be greater than zero.")
+
+    async with get_pg_session() as session:
+        await session.execute(
+            text("SELECT set_config('app.current_company_id', CAST(:empresa_id AS TEXT), true)"),
+            {"empresa_id": str(empresa_id)},
+        )
+
+        inventory = await _find_inventory(
+            session, empresa_id=empresa_id, store_id=store_id, batch_id=batch_id
+        )
+        inventory_id = inventory["inventory_id"]
+        current_quantity = inventory["current_quantity"]
+
+        if (
+            role.upper() not in _DISPOSAL_CEILING_EXEMPT_ROLES
+            and current_quantity > 0
+            and (quantity / current_quantity) * 100 > Decimal(str(settings.disposal_ceiling_percent))
+        ):
+            raise DisposalCeilingExceeded(
+                requested=quantity,
+                current_quantity=current_quantity,
+                ceiling_percent=settings.disposal_ceiling_percent,
+            )
+
+        disposal_row = (
+            await session.execute(
+                text("""
+                    INSERT INTO mottainai.disposal (store_id, employee_id, reason, observation)
+                    VALUES (:store_id, :employee_id, :reason, :observation)
+                    RETURNING disposal_id
+                """),
+                {
+                    "store_id": store_id,
+                    "employee_id": employee_id,
+                    "reason": reason.strip(),
+                    "observation": observation,
+                },
+            )
+        ).mappings().first()
+        disposal_id = disposal_row["disposal_id"]
+
+        await session.execute(
+            text("""
+                INSERT INTO mottainai.disposal_item (disposal_id, batch_id, disposed_quantity)
+                VALUES (:disposal_id, :batch_id, :quantity)
+            """),
+            {"disposal_id": disposal_id, "batch_id": batch_id, "quantity": quantity},
+        )
+
+        balance_row = (
+            await session.execute(
+                text("""
+                    SELECT mottainai.fn_atomic_update_inventory(
+                        :inventory_id, :delta, 'DISPOSAL', :employee_id, :observation
+                    ) AS new_balance
+                """),
+                {
+                    "inventory_id": inventory_id,
+                    "delta": -quantity,
+                    "employee_id": employee_id,
+                    "observation": observation or reason.strip(),
+                },
+            )
+        ).mappings().first()
+
+    return {
+        "disposal_id": disposal_id,
+        "batch_id": batch_id,
+        "store_id": store_id,
+        "disposed_quantity": quantity,
+        "new_inventory_balance": balance_row["new_balance"],
+    }
+
+
+async def receive_inventory(
+    empresa_id: int,
+    store_id: int,
+    batch_id: int,
+    employee_id: int,
+    quantity: Decimal,
+    observation: str | None = None,
+) -> dict:
+    """
+    Registers receipt of goods for an EXISTING batch already tracked in
+    inventory at that store (e.g. confirming a restock). Does not create new
+    products or batches — that's a separate, bigger feature (purchase-order
+    management) intentionally left out of scope here. Used by the Employee
+    Agent.
+    """
+    _validate_positive_int(store_id, "store_id")
+    _validate_positive_int(batch_id, "batch_id")
+    _validate_positive_int(employee_id, "employee_id")
+    quantity = Decimal(str(quantity))
+    if quantity <= 0:
+        raise ValueError("quantity must be greater than zero.")
+
+    async with get_pg_session() as session:
+        await session.execute(
+            text("SELECT set_config('app.current_company_id', CAST(:empresa_id AS TEXT), true)"),
+            {"empresa_id": str(empresa_id)},
+        )
+
+        inventory = await _find_inventory(
+            session, empresa_id=empresa_id, store_id=store_id, batch_id=batch_id
+        )
+        inventory_id = inventory["inventory_id"]
+
+        balance_row = (
+            await session.execute(
+                text("""
+                    SELECT mottainai.fn_atomic_update_inventory(
+                        :inventory_id, :delta, 'IN', :employee_id, :observation
+                    ) AS new_balance
+                """),
+                {
+                    "inventory_id": inventory_id,
+                    "delta": quantity,
+                    "employee_id": employee_id,
+                    "observation": observation,
+                },
+            )
+        ).mappings().first()
+
+    return {
+        "batch_id": batch_id,
+        "store_id": store_id,
+        "received_quantity": quantity,
+        "new_inventory_balance": balance_row["new_balance"],
+    }

@@ -1,0 +1,60 @@
+name: mottainai-windows
+
+services:
+  postgres:
+    image: postgres:15.7
+    container_name: mottainai-windows-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Defina POSTGRES_USER em .env.windows}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD em .env.windows}
+      POSTGRES_DB: ${POSTGRES_DB:?Defina POSTGRES_DB em .env.windows}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - mottainai_windows_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 18
+
+  mongo:
+    image: mongo:7.0.11
+    container_name: mottainai-windows-mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:?Defina MONGO_INITDB_ROOT_USERNAME em .env.windows}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?Defina MONGO_INITDB_ROOT_PASSWORD em .env.windows}
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mottainai_windows_mongodata:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --username \"$$MONGO_INITDB_ROOT_USERNAME\" --password \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --quiet --eval \"db.adminCommand('ping').ok\""]
+      interval: 5s
+      timeout: 3s
+      retries: 18
+
+  redis:
+    image: redis:7.4.2-alpine
+    container_name: mottainai-windows-redis
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Defina REDIS_PASSWORD em .env.windows}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - mottainai_windows_redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 18
+
+volumes:
+  mottainai_windows_pgdata:
+  mottainai_windows_mongodata:
+  mottainai_windows_redisdata:
+
+networks:
+  default:
+    name: mottainai-windows-network
