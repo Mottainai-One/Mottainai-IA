@@ -1,5 +1,7 @@
 .env
-.env.windows
+.env.*
+!.env.example
+!.env.windows.example
 .venv/
 __pycache__/
 *.pyc

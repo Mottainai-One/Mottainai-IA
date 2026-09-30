@@ -352,18 +352,21 @@ O sistema segue uma abordagem defensiva e orientada a controle:
 
 ## Testes e qualidade
 
-Mesmos passos executados pela CI:
+O [CI](.github/workflows/ci.yml) executa testes, lint, compilação, cobertura,
+nove verificações da camada de IA, varredura de credenciais com Gitleaks e valida
+o formato das PRs definido em [.github/pull_request_template.md](.github/pull_request_template.md).
+Os testes usam mocks para LLMs, bancos e serviços externos.
 
 ```bash
-ruff check .
+ruff check app config interfaces scripts
 python -m compileall -q app config interfaces tests scripts
+python -m unittest discover -s tests/ci -v
 coverage run -m unittest discover -s tests -p "test_*.py" -v
 coverage report --fail-under=60
 ```
 
-A CI ([ci.yml](.github/workflows/ci.yml)) ainda valida os prompts e o formato das respostas dos agentes com `python scripts/validate_ai.py prompts` e `python scripts/validate_ai.py responses`.
-
-Os testes cobrem regras de autorização, isolamento de sessão e de tenant, controle de acesso e comportamento de fronteira sem depender de LLM ou de serviços externos.
+Veja [docs/CI.md](docs/CI.md) para os checks, as evidências esperadas e as
+limitações da validação automatizada.
 
 ## Observabilidade
 

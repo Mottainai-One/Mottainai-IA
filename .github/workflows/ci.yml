@@ -4,8 +4,15 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # ============================================================
@@ -15,11 +22,12 @@ jobs:
   test:
     name: 1. IA Funciona sem Erros
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13"
           cache: "pip"
@@ -35,6 +43,9 @@ jobs:
       - name: Compile check
         run: python -m compileall -q app config interfaces tests scripts
 
+      - name: Test PR template validator
+        run: python -m unittest discover -s tests/ci -v
+
       - name: Run unit tests (with coverage)
         run: coverage run -m unittest discover -s tests -p "test_*.py" -v
 
@@ -49,7 +60,7 @@ jobs:
     name: 2. Prompts Documentados
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Validar prompts (organizados e documentados)
         run: python scripts/validate_ai.py prompts
@@ -62,7 +73,7 @@ jobs:
     name: 3. Respostas Validadas
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Validar respostas (Juiz fail-closed e guardrail de saida)
         run: python scripts/validate_ai.py responses
@@ -75,7 +86,7 @@ jobs:
     name: 4. Erros e Timeouts Tratados
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Verificar retry, backoff e timeouts nas integracoes
         run: |
@@ -110,7 +121,7 @@ jobs:
     name: 5. Agentes e Ferramentas Definidas
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Validar agentes e ferramentas
         run: python scripts/validate_ai.py agents
@@ -123,7 +134,7 @@ jobs:
     name: 6. RAG Contexto Relevante
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Validar pipeline de RAG
         run: python scripts/validate_ai.py rag
@@ -135,7 +146,7 @@ jobs:
     name: 9. Tipos de Fonte Validos
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Validar sources[].type contra o enum aceito pelo Mongo
         run: python scripts/validate_ai.py sources
@@ -147,8 +158,9 @@ jobs:
   secret-scan:
     name: 7. Sem Credenciais Expostas
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -157,6 +169,14 @@ jobs:
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o gitleaks.tgz
           tar -xzf gitleaks.tgz gitleaks
           ./gitleaks git --no-banner --redact -v --config .gitleaks.toml
+
+      - name: Scan full history with pinned Gitleaks image
+        run: >-
+          docker run --rm -v "$PWD:/repo:ro"
+          zricethezav/gitleaks:v8.24.2@sha256:b5918eb91b8d2473cec722f066abb4352e4ffdc4ec9f4283ec143aba9ec9ebc4
+          git /repo --redact --no-banner --verbose
+          --config /repo/.gitleaks.toml
+          --gitleaks-ignore-path /repo/.gitleaksignore
 
       - name: Protecao do .env e credenciais
         run: |
@@ -197,9 +217,13 @@ jobs:
     name: 8. Alteracoes Documentadas na PR
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+
+      - name: Validate PR body against repository template
+        if: github.event_name == 'pull_request'
+        run: python scripts/ci/check_pr.py
 
       - name: Convencao de commits
         run: |
