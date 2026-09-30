@@ -1,32 +1,39 @@
-# Mottainai IA Layer — Convenções do Projeto
+# Mottainai IA Layer — Project Conventions
 
-## Estrutura
+## Structure
 
-- `interfaces/api/`: camada HTTP/FastAPI. Não concentra regras de agentes ou acesso direto a bancos além do necessário para health checks.
-- `app/agents/`: nós LangGraph e agentes de domínio.
-- `app/tools/`: integrações de domínio com PostgreSQL, Redis, visão e MCP.
-- `app/memory/`: sessão, histórico e memória longa no MongoDB.
-- `app/rag/`: recuperação de conhecimento e fontes externas.
-- `app/guardrails/`: controles determinísticos de entrada e saída.
-- `app/observability/`: métricas, erros, custo e auditoria técnica.
-- `config/settings.py`: única fonte de variáveis de ambiente. `app/config.py` é compatibilidade legada.
-- `tests/`: espelha responsabilidades da aplicação; testes não dependem de LLM, rede ou banco real.
+- `interfaces/api/`: FastAPI HTTP layer. Keep agent rules and database access out of routes, except for health checks.
+- `app/agents/`: LangGraph nodes and domain agents.
+- `app/tools/`: domain integrations with PostgreSQL, Redis, vision, and MCP.
+- `app/memory/`: sessions, history, and long-term memory in MongoDB.
+- `app/rag/`: knowledge retrieval and external sources.
+- `app/guardrails/`: deterministic input and output controls.
+- `app/observability/`: metrics, errors, cost, and technical audit trails.
+- `config/settings.py`: the single source of environment settings. `app/config.py` is a legacy compatibility layer.
+- `tests/`: mirrors application responsibilities; tests must not depend on live LLMs, networks, or databases.
 
-## Regras obrigatórias
+## Language convention
 
-- Preserve o fluxo: guardrail de entrada → contexto → supervisor → agente → Juiz → guardrail de saída.
-- O Juiz é fail-closed; falha na avaliação nunca libera resposta.
-- Cliente/FAQ nunca acessam dados operacionais internos.
-- Toda sessão pertence a `empresa_id + usuario_id`; não aceite acesso cruzado.
-- Não adicione ações automáticas: qualquer operação de negócio exige confirmação explícita do usuário.
-- Mantenha fontes RAG no retorno e no histórico das mensagens.
-- Use `.env` apenas localmente; não versionar ou expor credenciais.
+- Use English for new Python identifiers, comments, docstrings, tests, and internal architecture documentation.
+- Keep system prompts, model-facing context, and end-user messages in Portuguese: the product serves Portuguese-speaking users, and changing prompt wording can change behavior.
+- Keep existing API routes, domain agent names, role values, database keys, and other persisted or external contracts until a separately reviewed migration can update their consumers.
 
-## Validação mínima
+## Required rules
+
+- Preserve the flow: input guardrail → context → supervisor → domain agent → Judge → output guardrail.
+- The Judge fails closed; an evaluation failure must never release a response.
+- Customer and FAQ agents must never access internal operational data.
+- Every session belongs to `empresa_id + usuario_id`; reject cross-tenant and cross-user access.
+- Do not add automatic business actions; every business operation requires explicit user confirmation.
+- Keep RAG sources in responses and message history.
+- Use `.env` only locally; never commit or expose credentials.
+- Reject startup when `JWT_SECRET` is missing, weak, or a documented placeholder.
+
+## Minimum validation
 
 ```bash
-.venv/bin/python -m compileall -q app config interfaces tests scripts
-.venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+python -m compileall -q app config interfaces tests scripts
+python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-Para teste end-to-end, subir a API e validar `/health`, `/chat`, sessões e `/metrics/summary` com dependências reais disponíveis.
+For an end-to-end check, start the API and validate `/health`, `/chat`, sessions, and `/metrics/summary` with real dependencies available.
