@@ -211,7 +211,7 @@ REDIS_URL=redis://localhost:6379/0
 REDIS_PASSWORD=defina-uma-senha-forte    # obrigatório para subir a API via Docker Compose
 
 # Autenticação e integrações
-JWT_SECRET=gere-um-segredo-forte-de-32-caracteres-por-maquina
+JWT_SECRET=CHANGE_ME_GENERATE_A_NEW_LOCAL_JWT_SECRET
 MCP_SHARED_TOKEN=
 A2A_SHARED_TOKEN=
 MCP_EMPRESA_ID=0                          # 0 = integração bloqueada
@@ -223,6 +223,8 @@ LOG_LEVEL=INFO
 ```
 
 > `LLM_PROVIDER=ollama_local` roda 100% offline (loopback, sem enviar conversas a terceiros). Baixe o modelo antes: `ollama pull qwen2.5:7b-instruct`.
+
+> Gere um segredo JWT exclusivo com `python -c "import secrets; print(secrets.token_urlsafe(48))"` e substitua o placeholder em `.env`. A API recusa iniciar enquanto ele estiver presente.
 
 > O projeto aceita `DATABASE_URL` e `MONGO_URL` como aliases de compatibilidade. A lista completa de variáveis (Ollama, rate limit, timeouts de Redis, custos de token) está no [.env.example](.env.example).
 

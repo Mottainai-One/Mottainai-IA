@@ -30,7 +30,9 @@ from config.settings import get_settings
 logger = logging.getLogger(__name__)
 
 _ALLOWED_ROLES = frozenset({"CLIENTE", "ESTOQUISTA", "GERENTE", "DONO"})
-_JWT_SECRET_PLACEHOLDER_PREFIXES = ("replace_", "change_me", "your_", "example_")
+_JWT_SECRET_PLACEHOLDER_PREFIXES = (
+    "replace_", "change_me", "your_", "example_", "gere-um-segredo",
+)
 _bearer = HTTPBearer(auto_error=False)
 
 

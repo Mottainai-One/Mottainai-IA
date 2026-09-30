@@ -67,7 +67,7 @@ from app.observability.logging_setup import (
 from app.observability.metrics import get_metrics_summary, record_execution_metrics
 from app.observability.routing_logs import record_routing_log
 from app.observability.tool_runs import record_tool_runs
-from app.security.auth import AuthContext, require_auth, require_roles
+from app.security.auth import AuthContext, is_configured_jwt_secret, require_auth, require_roles
 from config.settings import get_settings
 
 settings = get_settings()
@@ -80,6 +80,9 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if not is_configured_jwt_secret(settings.jwt_secret):
+        raise RuntimeError("JWT_SECRET must be a unique secret of at least 32 characters, not a placeholder")
+
     # Offline mode is only safe once the embedding model is already cached.
     if settings.transformers_offline:
         import os
