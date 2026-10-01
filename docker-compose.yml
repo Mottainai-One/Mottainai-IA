@@ -1,0 +1,66 @@
+services:
+  postgres:
+    image: postgres:15.7
+    container_name: mottainai-postgres
+    environment:
+      POSTGRES_USER: mottainai
+      POSTGRES_PASSWORD: mottainai
+      POSTGRES_DB: mottainai
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mottainai -d mottainai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongo:
+    image: mongo:7.0.11
+    container_name: mottainai-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodata:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    container_name: mottainai-api
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      POSTGRES_DSN: ******postgres:5432/mottainai
+      MONGO_URI: mongodb://mongo:27017
+      REDIS_URL: redis://:${REDIS_PASSWORD:?defina REDIS_PASSWORD no arquivo .env}@redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    networks:
+      - default
+      - redis-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  pgdata:
+  mongodata:
+
+networks:
+  default:
+    name: mottainai-api-network
+  redis-network:
+    name: mottainai-redis-network
+    external: true

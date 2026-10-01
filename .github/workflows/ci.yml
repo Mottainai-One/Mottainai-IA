@@ -15,92 +15,288 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  checklist:
-    name: ${{ matrix.criterion }}
-    if: github.event_name == 'pull_request'
+  # ============================================================
+  # JOB 1: IA funciona sem erros (testes, lint e compilacao)
+  # Checklist: "IA funciona sem erros"
+  # ============================================================
+  test:
+    name: 1. IA Funciona sem Erros
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    strategy:
-      fail-fast: false
-      matrix:
-        criterion:
-          - IA funciona sem erros
-          - Prompts documentados
-          - Respostas validadas
-          - Erros e timeouts tratados
-          - Agentes e ferramentas definidos
-          - RAG com contexto relevante
-          - Sem credenciais expostas
-          - Alterações documentadas na PR
-          - Tipos de fonte válidos
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - name: Validar declaração no checklist da PR
-        env:
-          CRITERION: ${{ matrix.criterion }}
-        run: python3 scripts/ci/check_pr.py
 
-  secrets:
-    name: Varredura de credenciais (Gitleaks)
+      - name: Set up Python 3.13
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --only-binary=:all: -r requirements.txt
+
+      - name: Lint (ruff)
+        run: ruff check app config interfaces scripts
+
+      - name: Compile check
+        run: python -m compileall -q app config interfaces tests scripts
+
+      - name: Test PR template validator
+        run: python -m unittest discover -s tests/ci -v
+
+      - name: Run unit tests (with coverage)
+        run: coverage run -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Coverage report (min 60%)
+        run: coverage report -m --fail-under=60
+
+  # ============================================================
+  # JOB 2: Prompts organizados e documentados
+  # Checklist: "Prompts estão organizados e documentados"
+  # ============================================================
+  prompts-documented:
+    name: 2. Prompts Documentados
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Validar prompts (organizados e documentados)
+        run: python scripts/validate_ai.py prompts
+
+  # ============================================================
+  # JOB 3: Respostas da IA validadas (Juiz fail-closed + guardrail de saida)
+  # Checklist: "Respostas da IA são validadas"
+  # ============================================================
+  responses-validated:
+    name: 3. Respostas Validadas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Validar respostas (Juiz fail-closed e guardrail de saida)
+        run: python scripts/validate_ai.py responses
+
+  # ============================================================
+  # JOB 4: Erros e timeouts tratados
+  # Checklist: "Erros e timeouts são tratados"
+  # ============================================================
+  errors-timeouts:
+    name: 4. Erros e Timeouts Tratados
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Verificar retry, backoff e timeouts nas integracoes
+        run: |
+          set -e
+          echo ">>> Verificando tratamento de erros e timeouts"
+
+          # LLM deve ter retry com backoff (timeout/5xx/rate limit transientes)
+          grep -qE 'with_retry|tenacity|retry' app/agents/runtime.py \
+            || { echo "ERRO: runtime de LLM nao implementa retry"; exit 1; }
+
+          # Redis deve ter timeouts de conexao/socket explicitos
+          grep -qE 'socket_connect_timeout|socket_timeout' app/database/redis_client.py \
+            || { echo "ERRO: cliente Redis nao define timeouts"; exit 1; }
+
+          # Chamadas HTTP externas (fonte RAG e tools MCP) devem ter timeout
+          grep -qE 'timeout=' app/rag/external_source.py \
+            || { echo "ERRO: fonte externa RAG (httpx) sem timeout"; exit 1; }
+          grep -qE 'timeout=' app/tools/mcp_tools.py \
+            || { echo "ERRO: tools MCP (httpx) sem timeout"; exit 1; }
+
+          # Config de retries/timeouts centralizada
+          grep -qE 'llm_max_retries|timeout_seconds' config/settings.py \
+            || { echo "ERRO: config de retries/timeouts ausente em config/settings.py"; exit 1; }
+
+          echo ">>> Erros e timeouts tratados OK"
+
+  # ============================================================
+  # JOB 5: Agentes com responsabilidades e ferramentas bem definidas
+  # Checklist: "Agentes possuem responsabilidades e ferramentas bem definidas"
+  # ============================================================
+  agents-tools:
+    name: 5. Agentes e Ferramentas Definidas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Validar agentes e ferramentas
+        run: python scripts/validate_ai.py agents
+
+  # ============================================================
+  # JOB 6: RAG retornando contexto relevante
+  # Checklist: "RAG está retornando contexto relevante"
+  # ============================================================
+  rag-context:
+    name: 6. RAG Contexto Relevante
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Validar pipeline de RAG
+        run: python scripts/validate_ai.py rag
+
+  # ============================================================
+  # JOB 9: Tipos de fonte validos (evita a classe de bug do enum do Mongo)
+  # ============================================================
+  source-types:
+    name: 9. Tipos de Fonte Validos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Validar sources[].type contra o enum aceito pelo Mongo
+        run: python scripts/validate_ai.py sources
+
+  # ============================================================
+  # JOB 7: Sem credenciais expostas
+  # Checklist: "Não existem credenciais expostas"
+  # ============================================================
+  secret-scan:
+    name: 7. Sem Credenciais Expostas
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-          persist-credentials: false
-      - name: Verificar histórico sem imprimir segredos
+
+      - name: Gitleaks (com allowlist de placeholders documentados)
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o gitleaks.tgz
+          tar -xzf gitleaks.tgz gitleaks
+          ./gitleaks git --no-banner --redact -v --config .gitleaks.toml
+
+      - name: Scan full history with pinned Gitleaks image
         run: >-
           docker run --rm -v "$PWD:/repo:ro"
           zricethezav/gitleaks:v8.24.2@sha256:b5918eb91b8d2473cec722f066abb4352e4ffdc4ec9f4283ec143aba9ec9ebc4
           git /repo --redact --no-banner --verbose
+          --config /repo/.gitleaks.toml
           --gitleaks-ignore-path /repo/.gitleaksignore
 
-  python:
-    name: Testes Python e infraestrutura do CI
+      - name: Protecao do .env e credenciais
+        run: |
+          set -e
+          echo ">>> Verificando que nao ha credenciais versionadas"
+
+          # Nenhum .env real versionado
+          if find . -name ".env" -not -path "./.git/*" | grep -q .; then
+            echo "ERRO: arquivo .env encontrado no repositorio"
+            exit 1
+          fi
+
+          # .env nunca commitado no historico
+          if git log --all --oneline -- .env | grep -q .; then
+            echo "ERRO: .env ja foi commitado no historico"
+            exit 1
+          fi
+
+          # .env no .gitignore
+          if ! grep -qE '^\.env' .gitignore 2>/dev/null; then
+            echo "AVISO: .env nao esta no .gitignore"
+          fi
+
+          # Sem chaves/segredos hard-coded em codigo python (fora de .env.example)
+          if grep -rEn 'sk-[A-Za-z0-9]{10,}|AIza[A-Za-z0-9_-]{20,}|Bearer [A-Za-z0-9]{20,}' \
+              --include="*.py" . | grep -q .; then
+            echo "ERRO: possivel chave hard-coded encontrada no codigo"
+            exit 1
+          fi
+
+          echo ">>> Nenhuma credencial exposta OK"
+
+  # ============================================================
+  # JOB 8: Alteracoes de IA documentadas na PR
+  # Checklist: "Alterações de IA estão documentadas na PR"
+  # ============================================================
+  pr-documentation:
+    name: 8. Alteracoes Documentadas na PR
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.13'
-      - name: Testar validador do checklist
-        run: python -m unittest discover -s tests/ci -v
-      - name: Detectar implementação da aplicação
-        id: app
-        shell: bash
+          fetch-depth: 0
+
+      - name: Validate PR body against repository template
+        if: github.event_name == 'pull_request'
+        run: python scripts/ci/check_pr.py
+
+      - name: Convencao de commits
         run: |
-          if git ls-files '*.py' | grep -Eq '^(app|config|interfaces|src)/'; then
-            echo 'present=true' >> "$GITHUB_OUTPUT"
+          set -e
+          PATTERN="^(feat|fix|docs|style|refactor|test|chore|ci|perf|build|revert):"
+
+          # Validate the PR's own commit line. Imported or merged history on
+          # second parents was reviewed separately and may predate this rule.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            COMMITS=$(git log --first-parent --oneline ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
           else
-            echo 'present=false' >> "$GITHUB_OUTPUT"
-            echo '### Testes da IA não executados: código da aplicação ausente.' >> "$GITHUB_STEP_SUMMARY"
+            BEFORE_SHA="${{ github.event.before }}"
+            if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+              # New branch, or the previous tip was rewritten (force-push) and
+              # its commit no longer exists in this checkout: no valid base to
+              # diff against, so check only the commit that was just pushed.
+              COMMITS=$(git log --oneline -1)
+            else
+              COMMITS=$(git log --first-parent --oneline "$BEFORE_SHA"..${{ github.sha }})
+            fi
           fi
-      - name: Instalar dependências da aplicação
-        if: steps.app.outputs.present == 'true'
+
+          echo "Commits encontrados:"
+          echo "$COMMITS"
+
+          echo "$COMMITS" | while read -r line; do
+            [ -z "$line" ] && continue
+            COMMIT_MSG=$(echo "$line" | cut -d' ' -f2-)
+            # Merge commits (e.g. from syncing a branch with main) don't carry
+            # a conventional-commit type of their own and are exempt. So are
+            # reverts: PATTERN already blesses a "revert:" type, but GitHub's
+            # Revert button and `git revert` both write 'Revert "<original
+            # subject>"' instead, which never matches it — so the check failed
+            # every revert PR over a subject line nobody typed and the button
+            # gives no way to change. The quote is part of the match so a
+            # hand-written "Reverter tudo" is still rejected.
+            if echo "$COMMIT_MSG" | grep -qE '^(Merge |Revert ")'; then
+              continue
+            fi
+            if ! echo "$COMMIT_MSG" | grep -qE "$PATTERN"; then
+              echo "ERRO: Commit nao segue a convencao: $COMMIT_MSG"
+              echo "Padrao esperado: feat|fix|docs|style|refactor|test|chore|ci: mensagem"
+              exit 1
+            fi
+          done
+
+          echo "Convencao de commits OK"
+
+      - name: Verificar documentacao das alteracoes de agentes
         run: |
-          if [ -f requirements.txt ]; then
-            python -m pip install -r requirements.txt
-          elif [ -f pyproject.toml ]; then
-            python -m pip install -e .
+          echo ">>> Alteracoes em agentes devem estar refletidas na documentacao"
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
           else
-            echo '::error::Código presente sem requirements.txt ou pyproject.toml.'
-            exit 1
+            BEFORE_SHA="${{ github.event.before }}"
+            if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+              CHANGED=$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)
+            else
+              CHANGED=$(git diff --name-only "$BEFORE_SHA"..${{ github.sha }})
+            fi
           fi
-      - name: Executar testes da aplicação (não aceita zero testes)
-        if: steps.app.outputs.present == 'true'
-        run: |
-          python - <<'PY'
-          import sys
-          import unittest
-          suite = unittest.defaultTestLoader.discover('tests', pattern='test_*.py')
-          if not suite.countTestCases():
-              sys.exit('Nenhum teste da aplicação encontrado em tests/.')
-          result = unittest.TextTestRunner(verbosity=2).run(suite)
-          sys.exit(not result.wasSuccessful())
-          PY
+
+          echo "Arquivos alterados:"
+          echo "$CHANGED"
+
+          # Se houve alteracao em app/agents/ e a doc nao foi tocada, avisa
+          # (nao bloqueia) para encorajar documentar a mudanca na PR.
+          if echo "$CHANGED" | grep -q 'app/agents/'; then
+            if ! echo "$CHANGED" | grep -qE '(ARQUITETURA\.md|README\.md)'; then
+              echo "AVISO: alteracoes em agentes sem atualizacao em ARQUITETURA.md/README.md"
+              echo "Descreva a mudanca de IA na descricao da PR (checklist item 8)."
+            fi
+          fi
+
+          echo "Verificacao de documentacao concluida"

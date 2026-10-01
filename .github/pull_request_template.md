@@ -1,21 +1,53 @@
-## Alterações
+# Pull Request
 
-Descreva o que mudou e o motivo.
+## Type of Change
 
-## Evidências e testes
+- [ ] Feature
+- [ ] Bug Fix
+- [ ] Documentation
+- [ ] Refactoring
+- [ ] Test
+- [ ] Chore
+- [ ] CI/CD
 
-Inclua comandos, resultados e links para prompts, agentes, ferramentas e fontes alterados.
-Para itens sem impacto nesta PR, justifique explicitamente aqui antes de marcá-los.
-Não marque como testado um comportamento que ainda não existe no repositório.
+---
 
-## Checklist de IA
+## Description
 
-- [ ] IA funciona sem erros
-- [ ] Prompts documentados
-- [ ] Respostas validadas
-- [ ] Erros e timeouts tratados
-- [ ] Agentes e ferramentas definidos
-- [ ] RAG com contexto relevante
-- [ ] Sem credenciais expostas
-- [ ] Alterações documentadas na PR
-- [ ] Tipos de fonte válidos
+Describe the change and why it is needed.
+
+---
+
+## Related Issue
+
+No related issue.
+
+---
+
+## Changes Made
+
+-
+
+---
+
+## Validation
+
+- [ ] Code reviewed
+- [ ] Tests executed
+- [ ] Documentation updated (if applicable)
+- [ ] No breaking changes
+
+---
+
+## Checklist
+
+- [ ] Branch follows the naming convention
+- [ ] Commits follow Conventional Commits
+- [ ] No sensitive information included
+- [ ] Ready for review
+
+---
+
+## Additional Notes
+
+Add any relevant information for reviewers.

@@ -211,7 +211,7 @@ REDIS_URL=redis://localhost:6379/0
 REDIS_PASSWORD=defina-uma-senha-forte    # obrigatório para subir a API via Docker Compose
 
 # Autenticação e integrações
-JWT_SECRET=gere-um-segredo-forte-de-32-caracteres-por-maquina
+JWT_SECRET=CHANGE_ME_GENERATE_A_NEW_LOCAL_JWT_SECRET
 MCP_SHARED_TOKEN=
 A2A_SHARED_TOKEN=
 MCP_EMPRESA_ID=0                          # 0 = integração bloqueada
@@ -223,6 +223,8 @@ LOG_LEVEL=INFO
 ```
 
 > `LLM_PROVIDER=ollama_local` roda 100% offline (loopback, sem enviar conversas a terceiros). Baixe o modelo antes: `ollama pull qwen2.5:7b-instruct`.
+
+> Gere um segredo JWT exclusivo com `python -c "import secrets; print(secrets.token_urlsafe(48))"` e substitua o placeholder em `.env`. A API recusa iniciar enquanto ele estiver presente.
 
 > O projeto aceita `DATABASE_URL` e `MONGO_URL` como aliases de compatibilidade. A lista completa de variáveis (Ollama, rate limit, timeouts de Redis, custos de token) está no [.env.example](.env.example).
 
@@ -350,18 +352,21 @@ O sistema segue uma abordagem defensiva e orientada a controle:
 
 ## Testes e qualidade
 
-O [CI](.github/workflows/ci.yml) valida os nove itens do checklist da PR,
-executa uma varredura de credenciais com Gitleaks e testa o validador do checklist.
-Os itens de revisão são declarações do autor, acompanhadas de evidências na PR.
+O [CI](.github/workflows/ci.yml) executa testes, lint, compilação, cobertura,
+nove verificações da camada de IA, varredura de credenciais com Gitleaks e valida
+o formato das PRs definido em [.github/pull_request_template.md](.github/pull_request_template.md).
+Os testes usam mocks para LLMs, bancos e serviços externos.
 
 ```bash
+ruff check app config interfaces scripts
+python -m compileall -q app config interfaces tests scripts
 python -m unittest discover -s tests/ci -v
+coverage run -m unittest discover -s tests -p "test_*.py" -v
+coverage report --fail-under=60
 ```
 
-No estado atual, o código da aplicação descrita neste README ainda não está
-versionado neste repositório. O CI informa essa ausência e só executará testes
-da aplicação quando o código e suas dependências forem adicionados.
-Veja [docs/CI.md](docs/CI.md) para critérios, limitações e configuração de proteção de merge.
+Veja [docs/CI.md](docs/CI.md) para os checks, as evidências esperadas e as
+limitações da validação automatizada.
 
 ## Observabilidade
 
