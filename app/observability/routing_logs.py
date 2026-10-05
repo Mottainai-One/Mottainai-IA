@@ -10,6 +10,7 @@ alongside record_agent_execution/record_execution_metrics/record_tool_runs.
 from datetime import datetime, timezone
 
 from app.database.mongo import get_mongo_db
+from app.observability.logging_setup import get_correlation_id
 
 
 async def record_routing_log(
@@ -22,6 +23,7 @@ async def record_routing_log(
     db = get_mongo_db()
     await db.routing_logs.insert_one({
         "conversationId": conversation_id,
+        "requestId": get_correlation_id(),
         "intent": intent,
         "selectedAgent": selected_agent,
         "selectedSkill": selected_skill,

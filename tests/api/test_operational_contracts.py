@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from google.api_core.exceptions import ServiceUnavailable
 from groq import APIConnectionError
 from openai import OpenAIError
+from PIL import Image
 from starlette.datastructures import Headers, UploadFile
 
 from app.database.operational_schema import OPERATIONAL_SCHEMA_READY_QUERY
@@ -19,6 +20,7 @@ from app.memory.short_term import SessionOwnershipError
 from app.security.auth import AuthContext
 from config.settings import Settings
 from interfaces.api.main import (
+    _enforce_endpoint_rate_limit,
     _dependency_checks,
     analyze_shelf_image,
     app,
@@ -84,7 +86,11 @@ class CorrelationIdMiddlewareTests(unittest.IsolatedAsyncioTestCase):
 
 class UnhandledExceptionHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_logs_and_returns_a_sanitized_portuguese_500(self):
-        request = SimpleNamespace(method="GET", url=SimpleNamespace(path="/audit/report"))
+        request = SimpleNamespace(
+            method="GET",
+            url=SimpleNamespace(path="/audit/report"),
+            scope={"route": SimpleNamespace(path="/audit/report")},
+        )
         error = RuntimeError("connection to postgresql://mottainai:s3cr3t@db failed")
 
         with patch("interfaces.api.main.logger") as logger:
@@ -388,13 +394,50 @@ class LogoutRouteTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ProtectedOperationalRoutesTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.rate_limit_patch = patch(
+            "interfaces.api.main._enforce_endpoint_rate_limit", new=AsyncMock()
+        )
+        self.rate_limit_patch.start()
+
+    def tearDown(self):
+        self.rate_limit_patch.stop()
+
     @staticmethod
     def _image() -> UploadFile:
+        image_data = io.BytesIO()
+        Image.new("RGB", (8, 8), color="white").save(image_data, format="PNG")
         return UploadFile(
-            file=io.BytesIO(b"image-bytes"),
+            file=io.BytesIO(image_data.getvalue()),
             filename="shelf.png",
             headers=Headers({"content-type": "image/png"}),
         )
+
+    async def test_endpoint_rate_limit_returns_429(self):
+        with patch(
+            "interfaces.api.main.check_endpoint_rate_limit",
+            new=AsyncMock(return_value=SimpleNamespace(allowed=False)),
+        ):
+            with self.assertRaises(HTTPException) as context:
+                await _enforce_endpoint_rate_limit(
+                    AuthContext(usuario_id=7, empresa_id=42, role="DONO"),
+                    scope="shelf",
+                    limit=5,
+                )
+        self.assertEqual(context.exception.status_code, 429)
+
+    async def test_shelf_analysis_rejects_non_image_bytes(self):
+        upload = UploadFile(
+            file=io.BytesIO(b"not-an-image"),
+            filename="shelf.png",
+            headers=Headers({"content-type": "image/png"}),
+        )
+        with self.assertRaises(HTTPException) as context:
+            await analyze_shelf_image(
+                principal=AuthContext(usuario_id=7, empresa_id=42, role="ESTOQUISTA"),
+                image=upload,
+            )
+        self.assertEqual(context.exception.status_code, 422)
 
     async def test_predictive_trigger_returns_guardrailed_response(self):
         generated = {"agent_response": "resposta bruta", "judge_score": 0.9, "sources": []}

@@ -5,19 +5,57 @@ import asyncio
 from typing import Any, NotRequired, TypedDict
 
 import httpx
+from groq import (
+    APIConnectionError as GroqConnectionError,
+)
+from groq import (
+    APITimeoutError as GroqTimeoutError,
+)
+from groq import (
+    InternalServerError as GroqInternalServerError,
+)
+from groq import (
+    RateLimitError as GroqRateLimitError,
+)
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
+from openai import (
+    APIConnectionError as OpenAIConnectionError,
+)
+from openai import (
+    APITimeoutError as OpenAITimeoutError,
+)
+from openai import (
+    InternalServerError as OpenAIInternalServerError,
+)
+from openai import (
+    RateLimitError as OpenAIRateLimitError,
+)
 
 from app.config import get_settings
 
 settings = get_settings()
 
-_http_client = httpx.Client()
-_http_async_client = httpx.AsyncClient()
+_http_timeout = httpx.Timeout(settings.llm_request_timeout_seconds)
+_http_limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
+_http_client = httpx.Client(timeout=_http_timeout, limits=_http_limits)
+_http_async_client = httpx.AsyncClient(timeout=_http_timeout, limits=_http_limits)
+_TRANSIENT_LLM_ERRORS = (
+    httpx.TimeoutException,
+    httpx.TransportError,
+    GroqConnectionError,
+    GroqTimeoutError,
+    GroqInternalServerError,
+    GroqRateLimitError,
+    OpenAIConnectionError,
+    OpenAITimeoutError,
+    OpenAIInternalServerError,
+    OpenAIRateLimitError,
+)
 
 
 class MottainaiState(TypedDict):
@@ -37,6 +75,7 @@ class MottainaiState(TypedDict):
     judge_score: float
     final_response: str
     error: str | None
+    error_code: NotRequired[str | None]
     sources: list[dict]
     input_tokens: int
     output_tokens: int
@@ -80,6 +119,7 @@ def _build_llm(temperature: float) -> BaseChatModel:
             model=settings.ollama_local_model,
             temperature=temperature,
             max_tokens=settings.llm_max_output_tokens,
+            timeout=settings.llm_request_timeout_seconds,
             http_client=_http_client,
             http_async_client=_http_async_client,
         )
@@ -93,6 +133,7 @@ def _build_llm(temperature: float) -> BaseChatModel:
             model=settings.ollama_model,
             temperature=temperature,
             max_tokens=settings.llm_max_output_tokens,
+            timeout=settings.llm_request_timeout_seconds,
             http_client=_http_client,
             http_async_client=_http_async_client,
         )
@@ -104,6 +145,7 @@ def _build_llm(temperature: float) -> BaseChatModel:
         model=settings.groq_model,
         temperature=temperature,
         max_tokens=settings.llm_max_output_tokens,
+        timeout=settings.llm_request_timeout_seconds,
         http_client=_http_client,
         http_async_client=_http_async_client,
     )
@@ -148,7 +190,11 @@ async def run_agent_with_tools(
         max_iterations = settings.agent_tool_calling_max_iterations
 
     raw_llm = _build_llm(temperature)
-    retry_kwargs = {"stop_after_attempt": settings.llm_max_retries, "wait_exponential_jitter": True}
+    retry_kwargs = {
+        "retry_if_exception_type": _TRANSIENT_LLM_ERRORS,
+        "stop_after_attempt": settings.llm_max_retries,
+        "wait_exponential_jitter": True,
+    }
     bound_llm = raw_llm.bind_tools(tools).with_retry(**retry_kwargs)
     plain_llm = raw_llm.with_retry(**retry_kwargs)
 
@@ -183,4 +229,14 @@ def get_llm(temperature: float = 0.3) -> Runnable:
     the external provider.
     """
     llm = _build_llm(temperature)
-    return llm.with_retry(stop_after_attempt=settings.llm_max_retries, wait_exponential_jitter=True)
+    return llm.with_retry(
+        retry_if_exception_type=_TRANSIENT_LLM_ERRORS,
+        stop_after_attempt=settings.llm_max_retries,
+        wait_exponential_jitter=True,
+    )
+
+
+async def close_llm_clients() -> None:
+    """Closes the shared HTTP clients during application shutdown."""
+    _http_client.close()
+    await _http_async_client.aclose()

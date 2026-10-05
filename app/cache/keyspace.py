@@ -7,6 +7,10 @@ def rate_limit(empresa_id: int, usuario_id: int) -> str:
     return f"{PREFIX}:rate-limit:{empresa_id}:{usuario_id}"
 
 
+def endpoint_rate_limit(scope: str, empresa_id: int, usuario_id: int) -> str:
+    return f"{PREFIX}:rate-limit:{scope}:{empresa_id}:{usuario_id}"
+
+
 def notification_inbox(empresa_id: int, usuario_id: int) -> str:
     return f"{PREFIX}:notification:inbox:{empresa_id}:{usuario_id}"
 

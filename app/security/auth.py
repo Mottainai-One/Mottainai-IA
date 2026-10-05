@@ -66,6 +66,11 @@ def is_configured_jwt_secret(secret: object) -> bool:
     return len(normalized) >= 32 and not normalized.startswith(_JWT_SECRET_PLACEHOLDER_PREFIXES)
 
 
+def is_configured_shared_secret(secret: object) -> bool:
+    """Validates integration secrets using the same rules as the JWT secret."""
+    return is_configured_jwt_secret(secret)
+
+
 async def _is_revoked(jti: str) -> bool:
     try:
         from app.cache.keyspace import revoked_token
@@ -99,12 +104,17 @@ async def decode_access_token(token: str) -> AuthContext:
         raise _invalid_token()
 
     try:
-        claims = jwt.decode(
-            token,
-            settings.jwt_secret,
-            algorithms=[settings.jwt_algorithm],
-            options={"require": ["exp", "sub", "empresa_id", "role"]},
-        )
+        decode_options: dict[str, object] = {
+            "algorithms": [settings.jwt_algorithm],
+            "options": {"require": ["exp", "sub", "empresa_id", "role"]},
+        }
+        issuer = getattr(settings, "jwt_issuer", "").strip()
+        audience = getattr(settings, "jwt_audience", "").strip()
+        if issuer:
+            decode_options["issuer"] = issuer
+        if audience:
+            decode_options["audience"] = audience
+        claims = jwt.decode(token, settings.jwt_secret, **decode_options)
         role = str(claims["role"]).upper()
         if role not in _ALLOWED_ROLES:
             raise ValueError

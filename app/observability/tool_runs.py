@@ -21,6 +21,7 @@ from time import perf_counter
 from typing import Any, Awaitable, TypeVar
 
 from app.database.mongo import get_mongo_db
+from app.observability.logging_setup import get_correlation_id
 
 T = TypeVar("T")
 
@@ -104,6 +105,6 @@ async def record_tool_runs(*, conversation_id: object, agent: str, tool_runs: li
         return
     db = get_mongo_db()
     await db.tool_runs.insert_many([
-        {"conversationId": conversation_id, "agent": agent, **run}
+        {"conversationId": conversation_id, "agent": agent, "requestId": get_correlation_id(), **run}
         for run in tool_runs
     ])

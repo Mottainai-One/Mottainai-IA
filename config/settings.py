@@ -62,12 +62,17 @@ class Settings(BaseSettings):
 
     # Rate limit
     rate_limit_rpm: int = 30
+    rate_limit_shelf_rpm: int = Field(default=5, ge=1, le=300)
+    rate_limit_predictive_rpm: int = Field(default=3, ge=1, le=100)
+    rate_limit_integration_rpm: int = Field(default=60, ge=1, le=1000)
     session_timeout_minutes: int = 60
 
     # JWT authentication (HS256; secret required outside of the code)
     jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
     jwt_expiration_minutes: int = 60
+    jwt_issuer: str = ""
+    jwt_audience: str = ""
 
     # Configurable reference cost. On the Groq free tier, keep both at 0.
     llm_input_cost_per_million_usd: float = 0.0
@@ -76,6 +81,11 @@ class Settings(BaseSettings):
     # Robustness: automatic retries on transient LLM provider failure
     # (timeout, rate limit, 5xx error) with exponential backoff + jitter.
     llm_max_retries: int = 3
+    llm_request_timeout_seconds: float = Field(default=90.0, gt=0, le=180)
+    predictive_timeout_seconds: float = Field(default=180.0, gt=0, le=300)
+    vision_timeout_seconds: float = Field(default=60.0, gt=0, le=180)
+    upload_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=25 * 1024 * 1024)
+    upload_max_pixels: int = Field(default=20_000_000, ge=1_000_000, le=100_000_000)
 
     # Native tool calling (app/agents/tools_bridge.py, app/agents/runtime.
     # run_agent_with_tools): lets the Employee/Owner agents' LLM call
@@ -123,6 +133,11 @@ class Settings(BaseSettings):
     # instead of handing the app a dead one (e.g. Postgres restarted or an
     # idle connection was reset by a firewall/proxy).
     postgres_pool_pre_ping: bool = True
+    postgres_statement_timeout_ms: int = Field(default=15_000, ge=100, le=120_000)
+    mongo_server_selection_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+    mongo_connect_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+    mongo_socket_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
+    dependency_check_timeout_seconds: float = Field(default=3.0, gt=0, le=30)
 
     # RAG results cache in Redis — avoids recomputing embeddings/similarity
     # for the same question within the same company. Purely a latency
@@ -183,6 +198,14 @@ class Settings(BaseSettings):
             raise ValueError("LLM_PROVIDER must be 'groq', 'ollama' or 'ollama_local'")
         return provider
 
+    @field_validator("jwt_algorithm")
+    @classmethod
+    def validate_jwt_algorithm(cls, value: str) -> str:
+        algorithm = value.strip().upper()
+        if algorithm != "HS256":
+            raise ValueError("JWT_ALGORITHM must be HS256")
+        return algorithm
+
     @property
     def llm_model_label(self) -> str:
         if self.llm_provider == "ollama_local":
@@ -190,6 +213,31 @@ class Settings(BaseSettings):
         if self.llm_provider == "ollama":
             return f"ollama-cloud/{self.ollama_model}"
         return f"groq/{self.groq_model}"
+
+    def validate_runtime_security(self) -> None:
+        """Rejects weak production-only credentials and insecure public URLs."""
+        if self.env.strip().lower() not in {"production", "prod"}:
+            return
+
+        def strong(secret: str) -> bool:
+            value = secret.strip().lower()
+            return len(value) >= 32 and not value.startswith(
+                ("replace_", "change_me", "your_", "example_", "gere-um-segredo")
+            )
+
+        problems = []
+        if not strong(self.jwt_secret):
+            problems.append("JWT_SECRET must be a non-placeholder secret with at least 32 characters")
+        if self.mcp_empresa_id > 0 and not strong(self.mcp_shared_token):
+            problems.append("MCP_SHARED_TOKEN must be strong when MCP is enabled")
+        if self.a2a_empresa_id > 0 and not strong(self.a2a_shared_token):
+            problems.append("A2A_SHARED_TOKEN must be strong when A2A is enabled")
+        if len(self.redis_password.strip()) < 16:
+            problems.append("REDIS_PASSWORD must contain at least 16 characters")
+        if not self.public_base_url.strip().lower().startswith("https://"):
+            problems.append("PUBLIC_BASE_URL must use HTTPS")
+        if problems:
+            raise RuntimeError("Unsafe production configuration: " + "; ".join(problems))
 
 
 @lru_cache

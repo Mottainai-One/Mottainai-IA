@@ -7,12 +7,15 @@ from app.agents.governanca import run_relatorio_conformidade
 from app.integrations.mcp_a2a import dispatch_a2a, dispatch_mcp
 from app.observability.metrics import record_execution_metrics
 
+MCP_TOKEN = "m" * 32
+A2A_TOKEN = "a" * 32
+
 
 class IntegrationContractsTests(unittest.IsolatedAsyncioTestCase):
     async def test_mcp_rejects_missing_token(self):
         settings = SimpleNamespace(
-            mcp_shared_token="mcp-token", mcp_empresa_id=1,
-            a2a_shared_token="a2a-token", a2a_empresa_id=1,
+            mcp_shared_token=MCP_TOKEN, mcp_empresa_id=1,
+            a2a_shared_token=A2A_TOKEN, a2a_empresa_id=1,
         )
         with patch("app.integrations.mcp_a2a.get_settings", return_value=settings):
             result = await dispatch_mcp({"id": 1, "method": "tools/list"}, None)
@@ -20,24 +23,24 @@ class IntegrationContractsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a2a_allows_only_explicit_read_actions(self):
         settings = SimpleNamespace(
-            mcp_shared_token="mcp-token", mcp_empresa_id=1,
-            a2a_shared_token="a2a-token", a2a_empresa_id=1,
+            mcp_shared_token=MCP_TOKEN, mcp_empresa_id=1,
+            a2a_shared_token=A2A_TOKEN, a2a_empresa_id=1,
         )
         with patch("app.integrations.mcp_a2a.get_settings", return_value=settings), patch(
             "app.integrations.mcp_a2a.mcp_expose_tool", new=AsyncMock(return_value={"result": [{"id": 1}]})
         ):
             result = await dispatch_a2a(
-                {"action": "get_active_alerts", "payload": {"empresa_id": 1}}, "Bearer a2a-token"
+                {"action": "get_active_alerts", "payload": {"empresa_id": 1}}, f"Bearer {A2A_TOKEN}"
             )
         self.assertEqual(result["status"], "completed")
 
     async def test_a2a_rejects_actions_outside_allowlist(self):
         settings = SimpleNamespace(
-            mcp_shared_token="mcp-token", mcp_empresa_id=1,
-            a2a_shared_token="a2a-token", a2a_empresa_id=1,
+            mcp_shared_token=MCP_TOKEN, mcp_empresa_id=1,
+            a2a_shared_token=A2A_TOKEN, a2a_empresa_id=1,
         )
         with patch("app.integrations.mcp_a2a.get_settings", return_value=settings):
-            result = await dispatch_a2a({"action": "delete_inventory"}, "Bearer a2a-token")
+            result = await dispatch_a2a({"action": "delete_inventory"}, f"Bearer {A2A_TOKEN}")
         self.assertEqual(result["error"]["code"], "unsupported_action")
 
 

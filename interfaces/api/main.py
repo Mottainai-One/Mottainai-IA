@@ -9,7 +9,9 @@ Portuguese, like the agents' SYSTEM_PROMPT — the one exception is the /a2a
 app/integrations/mcp_a2a.py, which targets external systems, not end users.
 """
 import asyncio
+import io
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 from decimal import Decimal
@@ -41,12 +43,15 @@ from google.api_core.exceptions import GoogleAPICallError
 from google.auth.exceptions import GoogleAuthError
 from groq import APIConnectionError, APIError
 from openai import OpenAIError
+from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
+from redis.exceptions import RedisError
 
 from app.agents.governanca import run_auditoria_execucoes, run_relatorio_conformidade
 from app.agents.runtime import get_llm_model_label
 from app.agents.supervisor import MottainaiState, mottainai_graph, node_guardrail_saida
 from app.cache.idempotency import InvalidIdempotencyKey, run_idempotent
+from app.cache.rate_limit import check_endpoint_rate_limit
 from app.database.mongo import get_mongo_db
 from app.database.operational_schema import OPERATIONAL_SCHEMA_READY_QUERY
 from app.integrations.mcp_a2a import a2a_agent_card, dispatch_a2a, dispatch_mcp
@@ -56,11 +61,13 @@ from app.memory.short_term import (
     close_conversation,
     get_conversation,
     list_conversations,
-    load_history,
+    load_history_records,
 )
 from app.observability.executions import record_agent_execution
 from app.observability.logging_setup import (
+    clear_correlation_id,
     configure_logging,
+    get_correlation_id,
     new_correlation_id,
     set_correlation_id,
 )
@@ -73,6 +80,7 @@ from config.settings import get_settings
 settings = get_settings()
 configure_logging()
 logger = logging.getLogger(__name__)
+_REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 # ─────────────────────────────────────────────
 # Lifespan (startup/shutdown)
@@ -80,6 +88,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    settings.validate_runtime_security()
     if not is_configured_jwt_secret(settings.jwt_secret):
         raise RuntimeError("JWT_SECRET must be a unique secret of at least 32 characters, not a placeholder")
 
@@ -95,8 +104,16 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        from app.agents.runtime import close_llm_clients
+        from app.database.mongo import close_mongo_client
+        from app.database.postgres import close_pg_engine
         from app.database.redis_client import close_redis_pool
-        await close_redis_pool()
+        await asyncio.gather(
+            close_redis_pool(),
+            close_mongo_client(),
+            close_pg_engine(),
+            close_llm_clients(),
+        )
 
 
 app = FastAPI(
@@ -149,11 +166,29 @@ async def correlation_id_middleware(request: Request, call_next):
     while handling it — guardrails, supervisor routing, the agent, the
     Judge — can be grepped together. Echoed back in the response header.
     """
-    correlation_id = request.headers.get("x-request-id") or new_correlation_id()
+    incoming_id = request.headers.get("x-request-id", "")
+    correlation_id = (
+        incoming_id
+        if isinstance(incoming_id, str) and _REQUEST_ID_PATTERN.fullmatch(incoming_id)
+        else new_correlation_id()
+    )
     set_correlation_id(correlation_id)
-    response = await call_next(request)
-    response.headers["X-Request-ID"] = correlation_id
-    return response
+    started = time.perf_counter()
+    response = None
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = correlation_id
+        return response
+    finally:
+        route = request.scope.get("route")
+        logger.info(
+            "HTTP request completed method=%s path=%s status=%s latency_ms=%.2f",
+            request.method,
+            getattr(route, "path", "<unmatched>"),
+            response.status_code if response is not None else 500,
+            (time.perf_counter() - started) * 1000,
+        )
+        clear_correlation_id()
 
 
 # ─────────────────────────────────────────────
@@ -162,7 +197,13 @@ async def correlation_id_middleware(request: Request, call_next):
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4096, description="Message for the AI agent")
-    session_id: str = Field(..., description="Unique session ID to reuse throughout the conversation")
+    session_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        description="Unique session ID to reuse throughout the conversation",
+    )
 
     model_config = {"extra": "forbid", "json_schema_extra": {"examples": [{"value": {
         "message": "Quais produtos vencem nos próximos 3 dias?",
@@ -190,24 +231,17 @@ class MetricsResponse(BaseModel):
 
 async def _dependency_checks() -> dict[str, str]:
     """Checks dependencies without exposing internal connection details."""
-    checks: dict[str, str] = {}
-
-    try:
+    async def check_mongodb() -> str:
         db = get_mongo_db()
         await db.command("ping")
-        checks["mongodb"] = "ok"
-    except Exception:
-        checks["mongodb"] = "unavailable"
+        return "ok"
 
-    try:
+    async def check_redis() -> str:
         from app.database.redis_client import get_redis
-        redis = get_redis()
-        await redis.ping()
-        checks["redis"] = "ok"
-    except Exception:
-        checks["redis"] = "unavailable"
+        await get_redis().ping()
+        return "ok"
 
-    try:
+    async def check_postgres() -> str:
         from sqlalchemy import text
 
         from app.database.postgres import get_pg_session
@@ -218,11 +252,74 @@ async def _dependency_checks() -> dict[str, str]:
             )
             if not result.scalar():
                 raise RuntimeError("Mottainai operational schema unavailable.")
-        checks["postgres"] = "ok"
-    except Exception:
-        checks["postgres"] = "unavailable"
+        return "ok"
 
-    return checks
+    async def bounded(check) -> str:
+        try:
+            async with asyncio.timeout(settings.dependency_check_timeout_seconds):
+                return await check()
+        except Exception:
+            return "unavailable"
+
+    mongodb, redis, postgres = await asyncio.gather(
+        bounded(check_mongodb),
+        bounded(check_redis),
+        bounded(check_postgres),
+    )
+    return {"mongodb": mongodb, "redis": redis, "postgres": postgres}
+
+
+async def _enforce_endpoint_rate_limit(
+    principal: AuthContext,
+    *,
+    scope: str,
+    limit: int,
+) -> None:
+    """Fails closed when an expensive endpoint exhausts its budget."""
+    try:
+        result = await check_endpoint_rate_limit(
+            principal.empresa_id,
+            principal.usuario_id,
+            scope=scope,
+            limit=limit,
+        )
+    except Exception as exc:
+        logger.warning("Rate-limit backend unavailable for %s: %s", scope, type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Controle de tráfego temporariamente indisponível.",
+        ) from exc
+    if not result.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Rate limit excedido para esta operação ({limit} req/min).",
+            headers={"Retry-After": str(settings.rate_limit_window_seconds)},
+        )
+
+
+def _validate_uploaded_image(image_bytes: bytes, declared_content_type: str | None) -> str:
+    """Validates actual image bytes, format and dimensions before model upload."""
+    if not image_bytes:
+        raise ValueError("A imagem está vazia.")
+    format_to_mime = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            image_format = (image.format or "").upper()
+            width, height = image.size
+            if width < 1 or height < 1 or width * height > settings.upload_max_pixels:
+                raise ValueError("A resolução da imagem excede o limite permitido.")
+            image.verify()
+    except ValueError:
+        raise
+    except (UnidentifiedImageError, OSError, SyntaxError, Image.DecompressionBombError) as exc:
+        raise ValueError("O arquivo enviado não é uma imagem válida.") from exc
+    actual_content_type = format_to_mime.get(image_format)
+    if actual_content_type is None:
+        raise ValueError("Formato de imagem não suportado. Use jpg, png ou webp.")
+    normalized_declared = (declared_content_type or "").split(";", 1)[0].strip().lower()
+    if normalized_declared != actual_content_type:
+        raise ValueError("O conteúdo da imagem não corresponde ao tipo informado.")
+    return actual_content_type
 
 
 @app.exception_handler(Exception)
@@ -235,10 +332,19 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     Portuguese, generic message — consistent with every other error response
     in this file — instead of leaking exception internals to the client.
     """
-    logger.error("Unhandled exception on %s %s", request.method, request.url.path, exc_info=exc)
+    route = getattr(request, "scope", {}).get("route")
+    logger.error(
+        "Unhandled exception on %s %s",
+        request.method,
+        getattr(route, "path", "<unmatched>"),
+        exc_info=exc,
+    )
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "Erro interno inesperado. Tente novamente ou contate o suporte."},
+        content={
+            "detail": "Erro interno inesperado. Tente novamente ou contate o suporte.",
+            "request_id": get_correlation_id(),
+        },
     )
 
 
@@ -275,15 +381,31 @@ async def agent_card(request: Request):
 async def a2a_message(payload: dict, authorization: str | None = Header(default=None)):
     """Receives authenticated A2A requests for allowed read actions."""
     result = await dispatch_a2a(payload, authorization)
-    if (result.get("error") or {}).get("code") == "unauthorized":
+    error_code = (result.get("error") or {}).get("code")
+    if error_code == "unauthorized":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized.")
+    if error_code in {"rate_limited", "unavailable"}:
+        raise HTTPException(
+            status_code=(status.HTTP_429_TOO_MANY_REQUESTS if error_code == "rate_limited" else status.HTTP_503_SERVICE_UNAVAILABLE),
+            detail=("Rate limit exceeded." if error_code == "rate_limited" else "Rate-limit service unavailable."),
+            headers={"Retry-After": str(settings.rate_limit_window_seconds)} if error_code == "rate_limited" else None,
+        )
     return result
 
 
 @app.post("/mcp", tags=["Integrações"])
 async def mcp_rpc(payload: dict, authorization: str | None = Header(default=None)):
     """HTTP transport for the MCP initialize, tools/list and tools/call methods."""
-    return await dispatch_mcp(payload, authorization)
+    result = await dispatch_mcp(payload, authorization)
+    error_code = (result.get("error") or {}).get("code")
+    if error_code in {-32029, -32003}:
+        limited = error_code == -32029
+        raise HTTPException(
+            status_code=(status.HTTP_429_TOO_MANY_REQUESTS if limited else status.HTTP_503_SERVICE_UNAVAILABLE),
+            detail=("Rate limit exceeded." if limited else "Rate-limit service unavailable."),
+            headers={"Retry-After": str(settings.rate_limit_window_seconds)} if limited else None,
+        )
+    return result
 
 
 @app.post("/auth/logout", tags=["Autenticação"])
@@ -385,6 +507,12 @@ async def chat(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="O modelo de IA configurado está indisponível. Verifique a disponibilidade do provedor ou do modelo e tente novamente.",
         ) from exc
+    except RedisError as exc:
+        logger.warning("Rate-limit service unavailable during chat: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Controle de tráfego temporariamente indisponível.",
+        ) from exc
     latency = time.time() - start_time
 
     execution_status = "error" if result.get("error") else "completed"
@@ -414,7 +542,12 @@ async def chat(
             status="error",
             node_latencies_ms=result.get("node_latencies_ms", {}),
         )
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["error"])
+        limited = result.get("error_code") == "rate_limited"
+        raise HTTPException(
+            status_code=(status.HTTP_429_TOO_MANY_REQUESTS if limited else status.HTTP_400_BAD_REQUEST),
+            detail=result["error"],
+            headers={"Retry-After": str(settings.rate_limit_window_seconds)} if limited else None,
+        )
 
     background_tasks.add_task(
         record_agent_execution,
@@ -489,15 +622,23 @@ async def get_chat_history(session_id: str, principal: Annotated[AuthContext, De
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     if not conversation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sessão não encontrada.")
-    history = await load_history(session_id, limit=50)
+    history = await load_history_records(
+        session_id, principal.empresa_id, principal.usuario_id, limit=50
+    )
     return {"session_id": session_id, "status": conversation["status"], "messages": [
-        {"role": m.__class__.__name__.replace("Message", "").lower(), "content": m.content} for m in history
+        {
+            "role": message.get("role", "unknown"),
+            "content": message.get("content", ""),
+            "sources": message.get("sources", []),
+        }
+        for message in history
     ]}
 
 
 @app.get("/chat/sessions", tags=["Chat"])
 async def get_chat_sessions(
-    principal: Annotated[AuthContext, Depends(require_auth)], limit: int = 20,
+    principal: Annotated[AuthContext, Depends(require_auth)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ):
     """Lists only sessions belonging to the authenticated principal."""
     return {"sessions": await list_conversations(principal.empresa_id, principal.usuario_id, limit)}
@@ -528,6 +669,9 @@ async def trigger_motor_preditivo(
     Pass store_id to scope the analysis to a single store instead of the
     whole company.
     """
+    await _enforce_endpoint_rate_limit(
+        principal, scope="predictive", limit=settings.rate_limit_predictive_rpm
+    )
     state: MottainaiState = {
         "session_id": f"motor-{principal.empresa_id}-{int(time.time())}",
         "empresa_id": principal.empresa_id,
@@ -554,9 +698,15 @@ async def trigger_motor_preditivo(
     from app.agents.motor_preditivo import node_motor_preditivo
 
     try:
-        result = await node_motor_preditivo(state)
-        result = await node_agente_juiz(result)
-        result = await node_guardrail_saida(result)
+        async with asyncio.timeout(settings.predictive_timeout_seconds):
+            result = await node_motor_preditivo(state)
+            result = await node_agente_juiz(result)
+            result = await node_guardrail_saida(result)
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="A análise preditiva excedeu o tempo limite. Tente novamente.",
+        ) from exc
     except (APIConnectionError, APIError, OpenAIError, httpx.HTTPError) as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -676,7 +826,8 @@ async def receber_mercadoria(
 
 @app.get("/metrics/summary", tags=["Métricas"])
 async def metrics_summary(
-    principal: Annotated[AuthContext, Depends(require_roles("DONO"))], days: int = 7,
+    principal: Annotated[AuthContext, Depends(require_roles("DONO"))],
+    days: Annotated[int, Query(ge=1, le=90)] = 7,
 ):
     """Observability dashboard for the authenticated owner's company."""
     return MetricsResponse(data=await get_metrics_summary(principal.empresa_id, days))
@@ -782,8 +933,11 @@ async def analyze_shelf_image(
       - store_id: int (optional)
       - session_id: str (optional — for traceability in MongoDB)
     """
+    await _enforce_endpoint_rate_limit(
+        principal, scope="shelf", limit=settings.rate_limit_shelf_rpm
+    )
     # Validates the file type
-    allowed_types = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+    allowed_types = {"image/jpeg", "image/png", "image/webp"}
     if image.content_type not in allowed_types:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -805,26 +959,42 @@ async def analyze_shelf_image(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sessão não encontrada.")
         conversation_id = conversation["_id"]
 
-    # 10MB limit
-    MAX_SIZE = 10 * 1024 * 1024
-    image_bytes = await image.read()
-    if len(image_bytes) > MAX_SIZE:
+    # Read only one byte past the configured cap so an oversized request
+    # cannot allocate an unbounded in-memory copy.
+    image_bytes = await image.read(settings.upload_max_bytes + 1)
+    await image.close()
+    if len(image_bytes) > settings.upload_max_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="Imagem muito grande. Máximo: 10MB.",
+            detail=f"Imagem muito grande. Máximo: {settings.upload_max_bytes // (1024 * 1024)}MB.",
         )
+    try:
+        validated_content_type = await asyncio.to_thread(
+            _validate_uploaded_image, image_bytes, image.content_type
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
 
     from app.agents.visao import analyze_shelf
     try:
-        result = await analyze_shelf(
-            image_bytes=image_bytes,
-            image_mime_type=image.content_type,
-            empresa_id=principal.empresa_id,
-            usuario_id=principal.usuario_id,
-            store_id=store_id,
-            session_id=session_id,
-            conversation_id=conversation_id,
-        )
+        async with asyncio.timeout(settings.vision_timeout_seconds):
+            result = await analyze_shelf(
+                image_bytes=image_bytes,
+                image_mime_type=validated_content_type,
+                empresa_id=principal.empresa_id,
+                usuario_id=principal.usuario_id,
+                store_id=store_id,
+                session_id=session_id,
+                conversation_id=conversation_id,
+            )
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="A análise da imagem excedeu o tempo limite. Tente novamente.",
+        ) from exc
     except (httpx.HTTPError, GoogleAPICallError, GoogleAuthError) as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
