@@ -2,10 +2,10 @@
 
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from interfaces.api.main import app, lifespan
+from config.settings import Settings
 
 
 def _example_jwt_secret() -> str:
@@ -21,7 +21,10 @@ class StartupJwtSecretTests(unittest.IsolatedAsyncioTestCase):
                        "gere-um-segredo-forte-de-32-caracteres-por-maquina"):
             with (
                 self.subTest(secret=secret),
-                patch("interfaces.api.main.settings", SimpleNamespace(jwt_secret=secret)),
+                patch(
+                    "interfaces.api.main.settings",
+                    Settings(_env_file=None, env="development", jwt_secret=secret),
+                ),
                 patch("app.rag.retriever.get_embedding_model") as load_model,
             ):
                 with self.assertRaisesRegex(RuntimeError, "JWT_SECRET"):
@@ -30,11 +33,17 @@ class StartupJwtSecretTests(unittest.IsolatedAsyncioTestCase):
                 load_model.assert_not_called()
 
     async def test_accepts_a_configured_secret_and_starts_normally(self):
-        settings = SimpleNamespace(jwt_secret="a" * 32, transformers_offline=False)
+        settings = Settings(
+            _env_file=None, env="development", jwt_secret="a" * 32,
+            transformers_offline=False,
+        )
         with (
             patch("interfaces.api.main.settings", settings),
             patch("app.rag.retriever.get_embedding_model") as load_model,
             patch("app.database.redis_client.close_redis_pool", new_callable=AsyncMock) as close_pool,
+            patch("app.database.mongo.close_mongo_client", new_callable=AsyncMock),
+            patch("app.database.postgres.close_pg_engine", new_callable=AsyncMock),
+            patch("app.agents.runtime.close_llm_clients", new_callable=AsyncMock),
         ):
             async with lifespan(app):
                 load_model.assert_called_once_with()

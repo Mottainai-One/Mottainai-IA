@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from app.cache.notifications import mark_as_read
-from app.cache.rate_limit import check_rate_limit
+from app.cache.rate_limit import check_endpoint_rate_limit, check_rate_limit
 from app.database import redis_client
 from config.settings import Settings
 
@@ -23,6 +23,20 @@ class RedisContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("mottainai:v1:rate-limit:10:20", redis.args)
         self.assertIn(":", redis.args[3])
         self.assertIn("ZREMRANGEBYSCORE", redis.script)
+
+    async def test_expensive_endpoint_uses_its_own_budget_key(self):
+        class Redis:
+            async def eval(self, script, keys, *args):
+                self.args = args
+                return [1, 1]
+
+        redis = Redis()
+        with patch("app.cache.rate_limit.get_redis", return_value=redis):
+            result = await check_endpoint_rate_limit(10, 20, scope="shelf", limit=5)
+
+        self.assertTrue(result.allowed)
+        self.assertIn("mottainai:v1:rate-limit:shelf:10:20", redis.args)
+        self.assertEqual(redis.args[-1], 5)
 
     async def test_notification_creation_is_idempotent(self):
         from app.cache.notifications import _CREATE_SCRIPT

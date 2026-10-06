@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from time import time
 from uuid import uuid4
 
-from app.cache.keyspace import rate_limit
+from app.cache.keyspace import endpoint_rate_limit, rate_limit
 from app.database.redis_client import get_redis
 from config.settings import get_settings
 
@@ -29,18 +29,42 @@ class RateLimitResult:
     limit: int
 
 
-async def check_rate_limit(empresa_id: int, usuario_id: int) -> RateLimitResult:
+async def _check_rate_limit(key: str, limit: int) -> RateLimitResult:
     settings = get_settings()
     now_ms = int(time() * 1000)
     window_ms = settings.rate_limit_window_seconds * 1000
     result = await get_redis().eval(
         _RATE_LIMIT_SCRIPT,
         1,
-        rate_limit(empresa_id, usuario_id),
+        key,
         now_ms - window_ms,
         now_ms,
         f"{now_ms}:{uuid4().hex}",
         settings.rate_limit_window_seconds,
-        settings.rate_limit_rpm,
+        limit,
     )
-    return RateLimitResult(allowed=bool(result[1]), request_count=int(result[0]), limit=settings.rate_limit_rpm)
+    return RateLimitResult(allowed=bool(result[1]), request_count=int(result[0]), limit=limit)
+
+
+async def check_rate_limit(empresa_id: int, usuario_id: int) -> RateLimitResult:
+    """Checks the shared chat budget for one authenticated principal."""
+    return await _check_rate_limit(
+        rate_limit(empresa_id, usuario_id),
+        get_settings().rate_limit_rpm,
+    )
+
+
+async def check_endpoint_rate_limit(
+    empresa_id: int,
+    usuario_id: int,
+    *,
+    scope: str,
+    limit: int,
+) -> RateLimitResult:
+    """Checks an isolated budget for an expensive endpoint."""
+    if not scope.replace("-", "").replace("_", "").isalnum():
+        raise ValueError("scope must be an alphanumeric identifier")
+    return await _check_rate_limit(
+        endpoint_rate_limit(scope, empresa_id, usuario_id),
+        limit,
+    )

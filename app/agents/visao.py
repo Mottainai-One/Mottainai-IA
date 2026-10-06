@@ -168,10 +168,12 @@ async def analyze_shelf(
         from datetime import datetime, timezone
 
         from app.database.mongo import get_mongo_db
+        from app.observability.logging_setup import get_correlation_id
         db = get_mongo_db()
         await db.ai_results.insert_one({
             "conversationId": conversation_id,
             "sessionId": session_id,
+            "requestId": get_correlation_id(),
             "empresaId": empresa_id,
             "usuarioId": usuario_id,
             "agent": "visao",

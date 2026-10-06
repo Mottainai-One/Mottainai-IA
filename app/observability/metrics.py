@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.database.mongo import get_mongo_db
+from app.observability.logging_setup import get_correlation_id
 from config.settings import get_settings
 
 
@@ -46,6 +47,7 @@ async def record_execution_metrics(
     await db.metrics.insert_one({
         "empresaId": empresa_id,
         "sessionId": session_id,
+        "requestId": get_correlation_id(),
         "conversationId": conversation_id,
         "agent": agent,
         "skill": skill,

@@ -8,14 +8,20 @@ customer — so they are translated to English here.
 import secrets
 from typing import Any
 
+from app.cache.rate_limit import check_endpoint_rate_limit
 from app.config import get_settings
+from app.security.auth import is_configured_shared_secret
 from app.tools.mcp_tools import mcp_expose_tool
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 
 
 def _authorized(authorization: str | None, expected_token: str) -> bool:
-    if not expected_token or not authorization or not authorization.startswith("Bearer "):
+    if (
+        not is_configured_shared_secret(expected_token)
+        or not authorization
+        or not authorization.startswith("Bearer ")
+    ):
         return False
     return secrets.compare_digest(authorization.removeprefix("Bearer "), expected_token)
 
@@ -35,6 +41,24 @@ def _company_scoped_arguments(
         return None, "Company not authorized."
 
     return {**arguments, "empresa_id": authorized_empresa_id}, None
+
+
+async def _integration_rate_error(
+    settings: Any,
+    scope: str,
+    empresa_id: int,
+) -> tuple[str, str] | None:
+    """Applies a per-company integration budget and fails closed on Redis errors."""
+    limit = getattr(settings, "rate_limit_integration_rpm", 0)
+    if not limit:  # Minimal settings fakes in unit tests do not enable rate limiting.
+        return None
+    try:
+        result = await check_endpoint_rate_limit(
+            max(empresa_id, 1), 1, scope=scope, limit=limit
+        )
+    except Exception:
+        return "unavailable", "Rate-limit service unavailable."
+    return None if result.allowed else ("rate_limited", "Rate limit exceeded.")
 
 
 def mcp_tools() -> list[dict[str, Any]]:
@@ -59,6 +83,13 @@ async def dispatch_mcp(request: dict[str, Any], authorization: str | None) -> di
     settings = get_settings()
     if not _authorized(authorization, settings.mcp_shared_token):
         return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32001, "message": "Unauthorized."}}
+    rate_error = await _integration_rate_error(
+        settings, "mcp", getattr(settings, "mcp_empresa_id", 0)
+    )
+    if rate_error:
+        kind, message = rate_error
+        code = -32029 if kind == "rate_limited" else -32003
+        return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
 
     if method == "initialize":
         return {"jsonrpc": "2.0", "id": request_id, "result": {"protocolVersion": MCP_PROTOCOL_VERSION, "serverInfo": {"name": "mottainai", "version": "1.0.0"}, "capabilities": {"tools": {}}}}
@@ -102,6 +133,12 @@ async def dispatch_a2a(message: dict[str, Any], authorization: str | None) -> di
     settings = get_settings()
     if not _authorized(authorization, settings.a2a_shared_token):
         return {"error": {"code": "unauthorized", "message": "Unauthorized."}}
+    rate_error = await _integration_rate_error(
+        settings, "a2a", getattr(settings, "a2a_empresa_id", 0)
+    )
+    if rate_error:
+        kind, message = rate_error
+        return {"error": {"code": kind, "message": message}}
     action = message.get("action")
     payload, error = _company_scoped_arguments(
         message.get("payload") or {},

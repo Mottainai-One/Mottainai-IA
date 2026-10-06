@@ -54,6 +54,8 @@ Business operations require explicit user confirmation. Predictive suggestions a
 
 The text model is configurable through `config/settings.py` (Groq or Ollama). `JWT_SECRET` must be a unique configured value; startup rejects missing, weak, and documented placeholder values.
 
+Every HTTP request receives a validated `X-Request-ID`, recorded with logs and persisted execution telemetry. Expensive vision, forecasting, and MCP/A2A requests have isolated Redis rate-limit budgets; uploads are bounded by byte size and decoded image dimensions. Database and model calls have explicit timeouts, and MongoDB conversation history reads/writes repeat the company and user scope at the query boundary.
+
 ## Implementation map
 
 | Concern | Implementation |

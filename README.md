@@ -382,6 +382,13 @@ limitações da validação automatizada.
 
 - **Retry automático de LLM** — toda chamada a Groq/Ollama tenta novamente com backoff exponencial + jitter em falha transitória (timeout, erro de rede, 5xx), sem alterar a resposta em caso de sucesso.
 - **Cache de RAG no Redis** — a mesma pergunta na mesma empresa não recalcula embeddings/similaridade; se o Redis cair, o RAG segue funcionando normalmente, só sem o ganho de velocidade (fail-open).
+- **Prazos máximos e pool de bancos** — timeouts limitam chamadas a LLM, visão, consultas PostgreSQL e verificações de saúde; o pool PostgreSQL existente tem limite explícito por processo.
+- **Limites por operação** — chat, análise de prateleira, motor preditivo e integrações têm orçamentos separados por identidade/empresa; indisponibilidade do Redis bloqueia operações protegidas com resposta temporária `503`.
+- **Upload de imagem validado** — tamanho e resolução são limitados, os bytes são inspecionados para confirmar o formato real e GIF não é aceito.
+- **Correlação ponta a ponta** — `X-Request-ID` validado acompanha logs e registros de execução; respostas inesperadas incluem o identificador para suporte, sem colocar IDs de sessão nos logs HTTP.
+- **Defesa de tenant no histórico** — leituras e gravações de mensagens conferem empresa e usuário na própria consulta; o endpoint de histórico retorna as fontes RAG armazenadas.
+
+Em `ENV=production`, a inicialização exige segredos fortes para JWT/Redis e para integrações habilitadas, além de `PUBLIC_BASE_URL` em HTTPS. Opcionalmente, configure `JWT_ISSUER` e `JWT_AUDIENCE` quando o emissor de tokens oferecer esses claims.
 
 ## Observações importantes
 

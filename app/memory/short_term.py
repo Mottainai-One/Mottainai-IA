@@ -10,6 +10,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from app.config import get_settings
 from app.database.mongo import get_mongo_db
+from app.observability.logging_setup import get_correlation_id
 
 
 class SessionExpiredError(Exception):
@@ -33,7 +34,12 @@ def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
-async def load_history(session_id: str, limit: int = 20) -> list[BaseMessage]:
+async def load_history(
+    session_id: str,
+    empresa_id: int,
+    usuario_id: int,
+    limit: int = 20,
+) -> list[BaseMessage]:
     """
     Loads the latest messages of a session as LangChain messages, oldest first.
 
@@ -47,7 +53,11 @@ async def load_history(session_id: str, limit: int = 20) -> list[BaseMessage]:
     which is what the agents and the history endpoint render.
     """
     db = get_mongo_db()
-    conv = await db.conversations.find_one({"sessionId": session_id})
+    conv = await db.conversations.find_one({
+        "sessionId": session_id,
+        "empresaId": empresa_id,
+        "usuarioId": usuario_id,
+    })
     if not conv:
         return []
 
@@ -64,6 +74,31 @@ async def load_history(session_id: str, limit: int = 20) -> list[BaseMessage]:
         elif doc.get("role") == "system":
             messages.append(SystemMessage(content=content))
     return messages
+
+
+async def load_history_records(
+    session_id: str,
+    empresa_id: int,
+    usuario_id: int,
+    limit: int = 50,
+) -> list[dict]:
+    """Loads recent tenant-scoped records, including RAG citations for history."""
+    db = get_mongo_db()
+    conv = await db.conversations.find_one({
+        "sessionId": session_id,
+        "empresaId": empresa_id,
+        "usuarioId": usuario_id,
+    })
+    if not conv:
+        return []
+    cursor = db.messages.find(
+        {"conversationId": conv["_id"], "empresaId": empresa_id},
+        {"_id": 0, "role": 1, "content": 1, "sources": 1, "createdAt": 1},
+        sort=[("createdAt", -1)],
+    ).limit(max(1, min(limit, 100)))
+    records = [document async for document in cursor]
+    records.reverse()
+    return records
 
 
 async def get_recent_vision_analyses(session_id: str, limit: int = 3) -> list[dict]:
@@ -96,6 +131,8 @@ async def get_recent_vision_analyses(session_id: str, limit: int = 3) -> list[di
 
 async def save_message(
     session_id: str,
+    empresa_id: int,
+    usuario_id: int,
     role: str,
     content: str,
     agent: str | None = None,
@@ -107,7 +144,12 @@ async def save_message(
 ) -> None:
     """Persists the message and renews the active session's last interaction."""
     db = get_mongo_db()
-    conv = await db.conversations.find_one({"sessionId": session_id, "status": "active"})
+    conv = await db.conversations.find_one({
+        "sessionId": session_id,
+        "empresaId": empresa_id,
+        "usuarioId": usuario_id,
+        "status": "active",
+    })
     if not conv:
         return
 
@@ -115,6 +157,7 @@ async def save_message(
     await db.messages.insert_one(
         {
             "empresaId": conv["empresaId"], "conversationId": conv["_id"], "role": role, "content": content,
+            "requestId": get_correlation_id(),
             "agent": agent, "skill": skill, "model": model, "sources": sources or [],
             "inputTokens": input_tokens, "outputTokens": output_tokens, "createdAt": now,
         }

@@ -72,7 +72,7 @@ class FakeMessagesCollection:
         self.last_sort = None
         self.last_cursor = None
 
-    def find(self, query, sort=None):
+    def find(self, query, projection=None, sort=None):
         self.last_query = query
         self.last_sort = sort
         self.last_cursor = _AsyncCursor(self._documents)
@@ -86,24 +86,28 @@ class LoadHistoryTests(unittest.IsolatedAsyncioTestCase):
             "messages": FakeMessagesCollection(messages),
         })()
         with patch.object(short_term, "get_mongo_db", return_value=db):
-            result = await short_term.load_history("s1", limit=limit)
+            result = await short_term.load_history("s1", 7, 10, limit=limit)
         return result, db
 
+    @staticmethod
+    def _conversation():
+        return {"sessionId": "s1", "empresaId": 7, "usuarioId": 10, "_id": "c1"}
+
     async def test_converts_user_role_to_human_message(self):
-        result, _ = await self._run({"sessionId": "s1", "_id": "c1"}, [{"role": "user", "content": "oi"}])
+        result, _ = await self._run(self._conversation(), [{"role": "user", "content": "oi"}])
 
         self.assertEqual(len(result), 1)
         self.assertIsInstance(result[0], HumanMessage)
         self.assertEqual(result[0].content, "oi")
 
     async def test_converts_assistant_role_to_ai_message(self):
-        result, _ = await self._run({"sessionId": "s1", "_id": "c1"}, [{"role": "assistant", "content": "olá"}])
+        result, _ = await self._run(self._conversation(), [{"role": "assistant", "content": "olá"}])
 
         self.assertEqual(len(result), 1)
         self.assertIsInstance(result[0], AIMessage)
 
     async def test_converts_system_role_to_system_message(self):
-        result, _ = await self._run({"sessionId": "s1", "_id": "c1"}, [{"role": "system", "content": "contexto"}])
+        result, _ = await self._run(self._conversation(), [{"role": "system", "content": "contexto"}])
 
         self.assertEqual(len(result), 1)
         self.assertIsInstance(result[0], SystemMessage)
@@ -115,7 +119,7 @@ class LoadHistoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_applies_the_given_limit(self):
         messages = [{"role": "user", "content": str(i)} for i in range(5)]
-        result, db = await self._run({"sessionId": "s1", "_id": "c1"}, messages, limit=2)
+        result, db = await self._run(self._conversation(), messages, limit=2)
 
         self.assertEqual(len(result), 2)
         self.assertEqual(db.messages.last_cursor.limit_value, 2)
@@ -126,7 +130,7 @@ class LoadHistoryTests(unittest.IsolatedAsyncioTestCase):
         # FIRST messages: past `limit` messages the agent's context froze at the
         # opening of the conversation and nothing newer could ever reach it.
         messages = [{"role": "user", "content": str(i)} for i in range(5)]
-        _, db = await self._run({"sessionId": "s1", "_id": "c1"}, messages, limit=2)
+        _, db = await self._run(self._conversation(), messages, limit=2)
 
         self.assertEqual(db.messages.last_sort, [("createdAt", -1)])
 
@@ -139,9 +143,33 @@ class LoadHistoryTests(unittest.IsolatedAsyncioTestCase):
             {"role": "user", "content": "segunda"},
             {"role": "user", "content": "primeira"},
         ]
-        result, _ = await self._run({"sessionId": "s1", "_id": "c1"}, newest_first)
+        result, _ = await self._run(self._conversation(), newest_first)
 
         self.assertEqual([m.content for m in result], ["primeira", "segunda", "terceira"])
+
+    async def test_history_query_is_scoped_to_both_tenant_identifiers(self):
+        db = type("Database", (), {
+            "conversations": FakeConversationsCollection([self._conversation()]),
+            "messages": FakeMessagesCollection([{
+                "role": "assistant",
+                "content": "Resposta",
+                "sources": [{"type": "rag", "ref": "manual.pdf"}],
+            }]),
+        })()
+        with patch.object(short_term, "get_mongo_db", return_value=db):
+            records = await short_term.load_history_records("s1", 7, 10)
+
+        self.assertEqual(records[0]["sources"][0]["ref"], "manual.pdf")
+        self.assertEqual(db.messages.last_query["empresaId"], 7)
+
+    async def test_history_is_empty_for_a_different_principal(self):
+        db = type("Database", (), {
+            "conversations": FakeConversationsCollection([self._conversation()]),
+            "messages": FakeMessagesCollection([]),
+        })()
+        with patch.object(short_term, "get_mongo_db", return_value=db):
+            messages = await short_term.load_history("s1", 7, 99)
+        self.assertEqual(messages, [])
 
 
 class ListConversationsTests(unittest.IsolatedAsyncioTestCase):

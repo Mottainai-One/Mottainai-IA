@@ -27,14 +27,20 @@ def main() -> None:
         raise SystemExit("Defina JWT_SECRET forte e use ENV=development para gerar token local.")
 
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expiration_minutes)
-    token = jwt.encode(
-        {
+    claims = {
             "sub": str(args.usuario_id),
             "empresa_id": args.empresa_id,
             "role": args.role,
             "exp": expires_at,
+            "iat": datetime.now(timezone.utc),
             "jti": str(uuid.uuid4()),  # lets POST /auth/logout revoke this specific token
-        },
+    }
+    if settings.jwt_issuer:
+        claims["iss"] = settings.jwt_issuer
+    if settings.jwt_audience:
+        claims["aud"] = settings.jwt_audience
+    token = jwt.encode(
+        claims,
         settings.jwt_secret,
         algorithm=settings.jwt_algorithm,
     )

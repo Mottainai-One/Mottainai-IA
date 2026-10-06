@@ -37,6 +37,21 @@ class JwtAuthenticationTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(HTTPException):
                 await decode_access_token(token(role="ADMINISTRADOR"))
 
+    async def test_enforces_configured_issuer_and_audience(self):
+        settings = SimpleNamespace(
+            jwt_secret=SECRET,
+            jwt_algorithm="HS256",
+            jwt_issuer="mottainai-auth",
+            jwt_audience="mottainai-api",
+        )
+        with patch("app.security.auth.get_settings", return_value=settings):
+            principal = await decode_access_token(
+                token(iss="mottainai-auth", aud="mottainai-api")
+            )
+            with self.assertRaises(HTTPException):
+                await decode_access_token(token(iss="other-issuer", aud="mottainai-api"))
+        self.assertEqual(principal.usuario_id, 10)
+
     async def test_rejects_missing_or_weak_secret(self):
         with patch("app.security.auth.get_settings", return_value=SimpleNamespace(jwt_secret="short", jwt_algorithm="HS256")):
             with self.assertRaises(HTTPException):

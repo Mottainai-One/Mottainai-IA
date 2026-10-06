@@ -34,7 +34,9 @@ _INJECTION_PATTERNS = re.compile(
 # Sensitive content that must not enter the pipeline
 _SENSITIVE_PATTERNS = re.compile(
     r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b"  # CPF (Brazilian tax ID)
-    r"|\b\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\b",  # credit card
+    r"|\b\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\b"  # credit card
+    r"|\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"  # email
+    r"|(?<!\d)(?:\+?55\s?)?(?:\(?\d{2}\)?\s?)?9?\d{4}[-\s]?\d{4}(?!\d)",  # phone
     re.IGNORECASE,
 )
 
@@ -44,6 +46,7 @@ class GuardrailResult:
     allowed: bool
     reason: str | None = None
     sanitized_input: str | None = None
+    code: str | None = None
 
 
 async def guardrail_entrada(
@@ -77,6 +80,7 @@ async def guardrail_entrada(
         return GuardrailResult(
             allowed=False,
             reason=f"Rate limit excedido ({settings.rate_limit_rpm} req/min). Tente em instantes.",
+            code="rate_limited",
         )
 
     return GuardrailResult(allowed=True, sanitized_input=sanitized)

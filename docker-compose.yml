@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: mottainai
       POSTGRES_DB: mottainai
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -20,7 +20,7 @@ services:
     image: mongo:7.0.11
     container_name: mottainai-mongo
     ports:
-      - "27017:27017"
+      - "127.0.0.1:27017:27017"
     volumes:
       - mongodata:/data/db
     healthcheck:

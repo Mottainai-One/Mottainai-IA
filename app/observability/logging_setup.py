@@ -30,6 +30,11 @@ def get_correlation_id() -> str:
     return _correlation_id.get()
 
 
+def clear_correlation_id() -> None:
+    """Clears request context after middleware finishes handling a request."""
+    _correlation_id.set("-")
+
+
 def set_correlation_id(value: str) -> None:
     _correlation_id.set(value)
 

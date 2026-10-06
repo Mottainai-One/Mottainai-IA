@@ -19,6 +19,7 @@ engine = create_async_engine(
     max_overflow=settings.postgres_max_overflow,
     pool_timeout=settings.postgres_pool_timeout_seconds,
     pool_pre_ping=settings.postgres_pool_pre_ping,
+    connect_args={"server_settings": {"statement_timeout": str(settings.postgres_statement_timeout_ms)}},
     echo=False,
 )
 
@@ -38,3 +39,8 @@ async def get_pg_session() -> AsyncIterator[AsyncSession]:
         except Exception:
             await session.rollback()
             raise
+
+
+async def close_pg_engine() -> None:
+    """Releases pooled PostgreSQL connections during application shutdown."""
+    await engine.dispose()

@@ -173,10 +173,12 @@ Avalie a resposta conforme as instruções.
     from datetime import datetime, timezone
 
     from app.database.mongo import get_mongo_db
+    from app.observability.logging_setup import get_correlation_id
     db = get_mongo_db()
     await db.prompt_evaluations.insert_one({
         "empresaId": state["empresa_id"],
         "sessionId": state["session_id"],
+        "requestId": get_correlation_id(),
         "promptVersion": "1.0",
         "agent": state.get("selected_agent", "unknown"),
         "skill": None,

@@ -96,6 +96,19 @@ class SessionIsolationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(context.exception.status_code, 403)
 
+    async def test_history_endpoint_returns_saved_rag_sources(self):
+        sources = [{"type": "rag", "ref": "manual.pdf"}]
+        with (
+            patch("interfaces.api.main.get_conversation", new=AsyncMock(return_value={"status": "active"})),
+            patch("interfaces.api.main.load_history_records", new=AsyncMock(return_value=[{
+                "role": "assistant", "content": "Resposta", "sources": sources,
+            }])),
+        ):
+            result = await get_chat_history(
+                "session-1", AuthContext(usuario_id=10, empresa_id=1, role="CLIENTE")
+            )
+        self.assertEqual(result["messages"][0]["sources"], sources)
+
     async def test_get_conversation_denies_another_company(self):
         db = FakeDatabase([_active_session(empresa_id=1)])
         with patch.object(short_term, "get_mongo_db", return_value=db):
@@ -105,9 +118,19 @@ class SessionIsolationTests(unittest.IsolatedAsyncioTestCase):
     async def test_message_inherits_tenant_from_its_conversation(self):
         db = FakeDatabase([_active_session(empresa_id=42)])
         with patch.object(short_term, "get_mongo_db", return_value=db):
-            await save_message("session-1", role="user", content="teste")
+            await save_message(
+                "session-1", empresa_id=42, usuario_id=10, role="user", content="teste"
+            )
 
         self.assertEqual(db.messages.documents[0]["empresaId"], 42)
+
+    async def test_message_write_rejects_a_different_user(self):
+        db = FakeDatabase([_active_session(empresa_id=42, usuario_id=10)])
+        with patch.object(short_term, "get_mongo_db", return_value=db):
+            await save_message(
+                "session-1", empresa_id=42, usuario_id=11, role="user", content="teste"
+            )
+        self.assertEqual(db.messages.documents, [])
 
 
 def _active_session(

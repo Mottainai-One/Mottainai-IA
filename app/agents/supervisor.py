@@ -15,7 +15,7 @@ from typing import Awaitable, Callable
 from langgraph.graph import END, StateGraph
 
 from app.agents.intent_catalog import get_active_intents, match_intent
-from app.agents.runtime import MottainaiState
+from app.agents.runtime import MottainaiState, gather_or_raise
 from app.guardrails.entrada import guardrail_entrada
 from app.guardrails.saida import guardrail_saida
 from app.memory.extractor import extract_memories
@@ -39,6 +39,7 @@ async def node_guardrail_entrada(state: MottainaiState) -> MottainaiState:
         return {
             **state,
             "error": result.reason,
+            "error_code": result.code,
             "final_response": result.reason,
             "agent_response": "",
         }
@@ -46,6 +47,7 @@ async def node_guardrail_entrada(state: MottainaiState) -> MottainaiState:
         **state,
         "sanitized_input": result.sanitized_input or state["user_input"],
         "error": None,
+        "error_code": None,
     }
 
 
@@ -60,8 +62,12 @@ async def node_load_context(state: MottainaiState) -> MottainaiState:
         state["usuario_id"],
         agent="pending",  # agent has not been selected yet at this point
     )
-    history = await load_history(state["session_id"])
-    memory = await load_memory(state["empresa_id"], state["usuario_id"])
+    history, memory = await gather_or_raise(
+        load_history(
+            state["session_id"], state["empresa_id"], state["usuario_id"]
+        ),
+        load_memory(state["empresa_id"], state["usuario_id"]),
+    )
 
     return {**state, "history": history, "memory": memory, "conversation_id": conversation["_id"]}
 
@@ -130,12 +136,16 @@ async def node_guardrail_saida(state: MottainaiState) -> MottainaiState:
     # Persists messages to the history
     await save_message(
         state["session_id"],
+        state["empresa_id"],
+        state["usuario_id"],
         role="user",
         content=state["sanitized_input"],
         agent=state["selected_agent"],
     )
     await save_message(
         state["session_id"],
+        state["empresa_id"],
+        state["usuario_id"],
         role="assistant",
         content=final,
         agent=state["selected_agent"],

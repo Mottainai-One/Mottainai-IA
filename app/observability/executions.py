@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 
 from app.database.mongo import get_mongo_db
+from app.observability.logging_setup import get_correlation_id
 
 
 async def record_agent_execution(
@@ -17,7 +18,8 @@ async def record_agent_execution(
     if isinstance(error, str):
         error = {"message": error}
     await db.agent_executions.insert_one({
-        "empresaId": empresa_id, "sessionId": session_id, "conversationId": conversation_id, "agent": agent,
+        "empresaId": empresa_id, "sessionId": session_id,
+        "requestId": get_correlation_id(), "conversationId": conversation_id, "agent": agent,
         "status": status, "latency": round(latency_s, 4),
         "nodeLatenciesMs": node_latencies_ms or {}, "error": error,
         "startedAt": datetime.now(timezone.utc), "createdAt": datetime.now(timezone.utc),
