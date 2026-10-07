@@ -21,6 +21,8 @@ lines, not the bare word.
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from tests.prompt_support import read_json_block
+
 # Internal names presented as a label for content, which is the form the model
 # reads as "this is what this block is called".
 FORBIDDEN_LABELS = ("(PostgreSQL)", "(RAG)", "(Postgres)")
@@ -201,9 +203,8 @@ class FuncionarioContextSizeTests(unittest.IsolatedAsyncioTestCase):
 
         # get_expiring_batches() orders by expiration_date ASC, so the cap must
         # keep the head of the list - the batches actually about to expire.
-        self.assertIn('"batch_code": "L0000"', system_text)
-        self.assertIn(f'"batch_code": "L{EXPIRING_BATCHES_IN_PROMPT - 1:04d}"', system_text)
-        self.assertNotIn(f'"batch_code": "L{EXPIRING_BATCHES_IN_PROMPT:04d}"', system_text)
+        rows = read_json_block(system_text, "mais urgentes):")
+        self.assertEqual(rows, self._batches(40)[:EXPIRING_BATCHES_IN_PROMPT])
 
     async def test_heading_reports_the_true_total_not_the_slice(self):
         # Without the real count the agent would present the slice as the whole

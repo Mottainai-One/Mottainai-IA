@@ -98,6 +98,8 @@ async def lifespan(app: FastAPI):
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
+    from app.database.postgres import validate_pg_security
+    await validate_pg_security()
     # Startup: warm up embedding model
     from app.rag.retriever import get_embedding_model
     await asyncio.to_thread(get_embedding_model)

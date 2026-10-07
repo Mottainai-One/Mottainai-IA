@@ -31,7 +31,7 @@ class Settings(BaseSettings):
 
     # Databases
     postgres_dsn: str = Field(
-        default="postgresql+asyncpg://mottainai:mottainai@localhost:5432/mottainai",
+        default="postgresql+asyncpg://mottainai_app:configure-local-password@localhost:5432/mottainai",
         validation_alias=AliasChoices("POSTGRES_DSN", "DATABASE_URL"),
     )
     mongo_uri: str = Field(
@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     # Robustness: automatic retries on transient LLM provider failure
     # (timeout, rate limit, 5xx error) with exponential backoff + jitter.
     llm_max_retries: int = 3
+    llm_tokens_per_minute: int = Field(default=0, ge=0)
     llm_request_timeout_seconds: float = Field(default=90.0, gt=0, le=180)
     predictive_timeout_seconds: float = Field(default=180.0, gt=0, le=300)
     vision_timeout_seconds: float = Field(default=60.0, gt=0, le=180)

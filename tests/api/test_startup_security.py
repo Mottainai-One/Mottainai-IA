@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from interfaces.api.main import app, lifespan
 from config.settings import Settings
+from interfaces.api.main import app, lifespan
 
 
 def _example_jwt_secret() -> str:
@@ -25,7 +25,8 @@ class StartupJwtSecretTests(unittest.IsolatedAsyncioTestCase):
                     "interfaces.api.main.settings",
                     Settings(_env_file=None, env="development", jwt_secret=secret),
                 ),
-                patch("app.rag.retriever.get_embedding_model") as load_model,
+                patch("app.database.postgres.validate_pg_security", new_callable=AsyncMock),
+            patch("app.rag.retriever.get_embedding_model") as load_model,
             ):
                 with self.assertRaisesRegex(RuntimeError, "JWT_SECRET"):
                     async with lifespan(app):
@@ -39,6 +40,7 @@ class StartupJwtSecretTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch("interfaces.api.main.settings", settings),
+            patch("app.database.postgres.validate_pg_security", new_callable=AsyncMock),
             patch("app.rag.retriever.get_embedding_model") as load_model,
             patch("app.database.redis_client.close_redis_pool", new_callable=AsyncMock) as close_pool,
             patch("app.database.mongo.close_mongo_client", new_callable=AsyncMock),
