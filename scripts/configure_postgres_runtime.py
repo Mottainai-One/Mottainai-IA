@@ -69,10 +69,16 @@ async def main() -> None:
     print(f"Runtime role configured: {role_name}; unscoped tenant queries returned zero rows.")
 
 
-if __name__ == "__main__":
+def run_cli() -> int:
+    """Report failures without exposing SQL, credentials, or a traceback."""
     try:
         asyncio.run(main())
     except Exception as exc:
         # SQL errors may contain the CREATE ROLE statement and its password.
         print(f"Runtime role setup failed ({type(exc).__name__}); verify administrative access, grants and the existing role password.", file=sys.stderr)
-        raise SystemExit(1) from None
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(run_cli())
