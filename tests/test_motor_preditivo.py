@@ -2,6 +2,8 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from tests.prompt_support import read_json_block
+
 
 class _StubResponse:
     def __init__(self, content: str):
@@ -114,8 +116,7 @@ class MotorPreditivoContextSizeTests(unittest.IsolatedAsyncioTestCase):
             await motor_preditivo.node_motor_preditivo({"empresa_id": 42})
 
         prompt_text = str(llm.last_messages[0].content)
-        self.assertIn('"batch_id": 9', prompt_text)
-        self.assertNotIn('"batch_id": 10', prompt_text)
+        self.assertEqual(read_json_block(prompt_text, "os mais urgentes primeiro):"), batches[:10])
 
 
 if __name__ == "__main__":

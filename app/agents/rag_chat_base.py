@@ -43,6 +43,7 @@ async def run_rag_chat_agent(
     return {
         **state,
         "agent_response": response.content,
+        "grounding_context": rag_context,
         "sources": sources,
         "input_tokens": usage.get("input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),

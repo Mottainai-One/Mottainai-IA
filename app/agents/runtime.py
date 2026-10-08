@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, NotRequired, TypedDict
 
 import httpx
@@ -19,7 +20,7 @@ from groq import (
 )
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
-from langchain_core.runnables import Runnable
+from langchain_core.runnables import Runnable, RunnableBinding
 from langchain_core.tools import BaseTool
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
@@ -34,6 +35,12 @@ from openai import (
 )
 from openai import (
     RateLimitError as OpenAIRateLimitError,
+)
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential_jitter,
 )
 
 from app.config import get_settings
@@ -57,6 +64,53 @@ _TRANSIENT_LLM_ERRORS = (
     OpenAIRateLimitError,
 )
 
+_provider_lock = asyncio.Lock()
+_provider_ready_at = 0.0
+
+
+class ProviderRunnable(RunnableBinding):
+    """One retry layer, shared quota pacing, and provider Retry-After support."""
+
+    async def ainvoke(self, input, config=None, **kwargs):
+        global _provider_ready_at
+
+        async def call():
+            global _provider_ready_at
+            async for attempt in AsyncRetrying(
+                stop=stop_after_attempt(settings.llm_max_retries),
+                retry=retry_if_exception_type(_TRANSIENT_LLM_ERRORS),
+                wait=wait_exponential_jitter(initial=1, max=8), reraise=True,
+            ):
+                with attempt:
+                    delay = max(0.0, _provider_ready_at - time.monotonic())
+                    if delay:
+                        await asyncio.sleep(delay)
+                    started = time.monotonic()
+                    try:
+                        response = await self.bound.ainvoke(input, config=config, **kwargs)
+                    except (GroqRateLimitError, OpenAIRateLimitError) as exc:
+                        headers = exc.response.headers
+                        try:
+                            delay = max(0.0, float(headers.get("retry-after", "1")))
+                        except ValueError:
+                            delay = 1.0
+                        _provider_ready_at = time.monotonic() + delay
+                        raise
+                    usage = getattr(response, "usage_metadata", None) or {}
+                    if settings.llm_provider == "groq" and settings.llm_tokens_per_minute:
+                        tokens = usage.get("total_tokens", 0) or (
+                            usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+                        )
+                        _provider_ready_at = started + 60 * tokens / settings.llm_tokens_per_minute
+                    return response
+
+        # Waiting and retries share one deadline instead of multiplying it.
+        async with asyncio.timeout(settings.llm_request_timeout_seconds):
+            if settings.llm_provider == "groq":
+                async with _provider_lock:
+                    return await call()
+            return await call()
+
 
 class MottainaiState(TypedDict):
     session_id: str
@@ -70,6 +124,7 @@ class MottainaiState(TypedDict):
     memory: dict
     conversation_id: object
     selected_agent: str
+    grounding_context: NotRequired[str]
     agent_response: str
     judge_approved: bool
     judge_score: float
@@ -111,14 +166,16 @@ def get_llm_model_label() -> str:
     return settings.llm_model_label
 
 
-def _build_llm(temperature: float) -> BaseChatModel:
+def _build_llm(temperature: float, max_tokens: int | None = None) -> BaseChatModel:
+    output_tokens = max_tokens or settings.llm_max_output_tokens
     if settings.llm_provider == "ollama_local":
         return ChatOpenAI(
             api_key="",
             base_url=settings.ollama_local_base_url.rstrip("/"),
             model=settings.ollama_local_model,
             temperature=temperature,
-            max_tokens=settings.llm_max_output_tokens,
+            max_tokens=output_tokens,
+            max_retries=0,
             timeout=settings.llm_request_timeout_seconds,
             http_client=_http_client,
             http_async_client=_http_async_client,
@@ -132,7 +189,8 @@ def _build_llm(temperature: float) -> BaseChatModel:
             base_url=settings.ollama_base_url.rstrip("/"),
             model=settings.ollama_model,
             temperature=temperature,
-            max_tokens=settings.llm_max_output_tokens,
+            max_tokens=output_tokens,
+            max_retries=0,
             timeout=settings.llm_request_timeout_seconds,
             http_client=_http_client,
             http_async_client=_http_async_client,
@@ -144,7 +202,8 @@ def _build_llm(temperature: float) -> BaseChatModel:
         api_key=settings.groq_api_key,
         model=settings.groq_model,
         temperature=temperature,
-        max_tokens=settings.llm_max_output_tokens,
+        max_tokens=output_tokens,
+        max_retries=0,
         timeout=settings.llm_request_timeout_seconds,
         http_client=_http_client,
         http_async_client=_http_async_client,
@@ -166,11 +225,8 @@ async def run_agent_with_tools(
     rounds of tool calls have happened
     (settings.agent_tool_calling_max_iterations by default).
 
-    Builds its own model rather than taking one from get_llm(): bind_tools
-    must run on the raw chat model, and get_llm() returns a RunnableRetry
-    wrapper that doesn't expose it (verified directly — RunnableRetry has
-    no bind_tools). Retry is applied after binding instead, once here,
-    with the exact same settings get_llm() uses.
+    Bind tools on the raw model, then wrap both tool-bound and plain calls
+    with the same quota-aware async runtime used by get_llm().
 
     A tool call that raises is not re-raised here: its error is fed back
     to the model as that tool's result (same as any other tool-calling
@@ -190,21 +246,24 @@ async def run_agent_with_tools(
         max_iterations = settings.agent_tool_calling_max_iterations
 
     raw_llm = _build_llm(temperature)
-    retry_kwargs = {
-        "retry_if_exception_type": _TRANSIENT_LLM_ERRORS,
-        "stop_after_attempt": settings.llm_max_retries,
-        "wait_exponential_jitter": True,
-    }
-    bound_llm = raw_llm.bind_tools(tools).with_retry(**retry_kwargs)
-    plain_llm = raw_llm.with_retry(**retry_kwargs)
+    bound_llm = ProviderRunnable(bound=raw_llm.bind_tools(tools))
+    plain_llm = ProviderRunnable(bound=raw_llm)
 
     tools_by_name = {tool.name: tool for tool in tools}
     conversation = list(messages)
+    usage_totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+    def record_usage(response: AIMessage) -> AIMessage:
+        usage = response.usage_metadata or {}
+        for key in usage_totals:
+            usage_totals[key] += usage.get(key, 0)
+        return response.model_copy(update={"usage_metadata": dict(usage_totals)})
 
     for _ in range(max_iterations):
         response = await bound_llm.ainvoke(conversation)
+        accumulated_response = record_usage(response)
         if not response.tool_calls:
-            return response
+            return accumulated_response
         conversation.append(response)
         for call in response.tool_calls:
             tool = tools_by_name.get(call["name"])
@@ -217,10 +276,10 @@ async def run_agent_with_tools(
                     content = f"Erro ao executar {call['name']}: {exc}"
             conversation.append(ToolMessage(content=str(content), tool_call_id=call["id"]))
 
-    return await plain_llm.ainvoke(conversation)
+    return record_usage(await plain_llm.ainvoke(conversation))
 
 
-def get_llm(temperature: float = 0.3) -> Runnable:
+def get_llm(temperature: float = 0.3, *, max_tokens: int | None = None) -> Runnable:
     """
     Returns the configured text provider, with automatic retries
     (exponential backoff + jitter) on transient provider failure — timeout,
@@ -228,12 +287,7 @@ def get_llm(temperature: float = 0.3) -> Runnable:
     response, same prompt, it only avoids failing on a temporary hiccup of
     the external provider.
     """
-    llm = _build_llm(temperature)
-    return llm.with_retry(
-        retry_if_exception_type=_TRANSIENT_LLM_ERRORS,
-        stop_after_attempt=settings.llm_max_retries,
-        wait_exponential_jitter=True,
-    )
+    return ProviderRunnable(bound=_build_llm(temperature, max_tokens))
 
 
 async def close_llm_clients() -> None:

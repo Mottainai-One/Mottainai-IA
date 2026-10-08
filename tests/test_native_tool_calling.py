@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import Runnable
 
 from app.agents.runtime import run_agent_with_tools
 from app.agents.tools_bridge import build_toolkit
@@ -15,7 +16,7 @@ def _tool_call(name, args, call_id="call-1"):
     return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
 
 
-class FakeChatModel:
+class FakeChatModel(Runnable):
     """Stands in for the object app.agents.runtime._build_llm() returns.
     bind_tools/with_retry both return self (matching how the real
     RunnableBinding chain behaves for this test's purposes), so a single
@@ -34,7 +35,10 @@ class FakeChatModel:
     def with_retry(self, **kwargs):
         return self
 
-    async def ainvoke(self, messages):
+    def invoke(self, messages, config=None, **kwargs):
+        raise NotImplementedError("Async test adapter")
+
+    async def ainvoke(self, messages, config=None, **kwargs):
         self.ainvoke_calls += 1
         return self._responses.pop(0)
 
@@ -105,6 +109,20 @@ class BuildToolkitLimitsTests(unittest.TestCase):
 
 
 class RunAgentWithToolsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_usage_includes_tool_rounds_and_forced_final_answer(self):
+        tool = AsyncMock(return_value="resultado")
+        tool.name = "get_kpis"
+        fake_llm = FakeChatModel([
+            AIMessage(content="", tool_calls=[_tool_call("get_kpis", {})],
+                      usage_metadata={"input_tokens": 100, "output_tokens": 10, "total_tokens": 110}),
+            AIMessage(content="resposta completa",
+                      usage_metadata={"input_tokens": 150, "output_tokens": 20, "total_tokens": 170}),
+        ])
+        with patch("app.agents.runtime._build_llm", return_value=fake_llm):
+            result = await run_agent_with_tools([tool], [HumanMessage(content="KPIs")], max_iterations=1)
+        self.assertEqual(result.content, "resposta completa")
+        self.assertEqual(result.usage_metadata, {"input_tokens": 250, "output_tokens": 30, "total_tokens": 280})
+
     async def test_calls_the_tool_the_model_requests_and_returns_its_final_answer(self):
         tool = AsyncMock(return_value="alertas: nenhum")
         tool.name = "get_stock_alerts"

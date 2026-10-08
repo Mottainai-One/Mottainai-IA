@@ -149,7 +149,7 @@ CHUNK_SEPARATOR = "\n\n---\n\n"
 
 
 def _rag_cache_key(query: str, empresa_id: int, top_k: int) -> str:
-    normalized = f"{query.strip().lower()}::{top_k}"
+    normalized = f"dedup-v1::{query.strip().lower()}::{top_k}"
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
     return rag_result(empresa_id, digest)
 
@@ -203,8 +203,11 @@ async def retrieve_with_sources(
 
     context_parts = []
     sources = []
+    seen_texts: set[str] = set()
     for r in results:
-        context_parts.append(r["text"])
+        if r["text"] not in seen_texts:
+            context_parts.append(r["text"])
+            seen_texts.add(r["text"])
         sources.append(
             {
                 "type": "rag",

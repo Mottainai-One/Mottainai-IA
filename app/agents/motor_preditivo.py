@@ -28,10 +28,10 @@ the engine's output is a product decision, not a missing line of code.
 Note: SYSTEM_PROMPT and the operational context block fed to the LLM are
 deliberately kept in Portuguese, same as the other agents.
 """
-import json
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from app.agents.context import NUMBER_GUIDANCE, model_context_json
 from app.agents.runtime import MottainaiState, get_llm
 from app.analytics.forecasting import build_daily_series, forecast_product_demand
 from app.notifications.alert_webhook import notify_new_critical_alerts
@@ -53,7 +53,14 @@ Suas responsabilidades:
 3. AÇÃO SUGERIDA: Para cada risco identificado, recomende: promoção relâmpago, transferência entre lojas, doação ou descarte. Justifique a escolha.
 4. PRÉ-LISTA DE ABASTECIMENTO: Com base na previsão de demanda calculada e no estoque atual, gere sugestão de reposição.
 
-Formato de saída: JSON estruturado + resumo executivo em português.
+Formato de saída: resumo executivo em português, com previsão, riscos, ações sugeridas e reposição.
+Use até 3500 caracteres, priorize até 5 produtos e 3 riscos; não repita os dados completos nem apresente JSON.
+Organize em quatro seções curtas: Previsão, Riscos, Ações e Reposição. Conclua todas; evite introdução, tabelas repetidas e lista adicional de próximos passos.
+Não exponha identificadores internos ou tecnologias. Sugestões precisam de confirmação antes de execução.
+Se faltarem dados de estoque, não invente quantidades de reposição.
+Não atribua causas, percentuais de impacto climático ou maior giro de uma loja sem esses dados. Diferencie previsão zero de ausência de vendas em outros períodos.
+Em ações, não cite lojas de destino nem afirme estoque baixo ou demanda em outras filiais sem dados por loja. Sugira confirmar giro, disponibilidade e logística antes de transferir; baixo giro não comprova demanda maior.
+Use nomes dos produtos e lojas em vez de códigos de lote ou campos técnicos. Para cada risco, dê uma ação condicional com justificativa curta, sem repetir a lista numa tabela. Não estime quantidades ou percentuais extras.
 NUNCA invente dados. Use APENAS os dados fornecidos no contexto, incluindo a previsão de demanda já calculada.
 """
 
@@ -135,26 +142,26 @@ Dados climáticos atuais (fonte: Open-Meteo via MCP — {forecast['source']}):
 ESCOPO DA ANÁLISE: {scope_line}
 
 PREVISÃO DE DEMANDA CALCULADA (média móvel ponderada com tendência, próximos 7 dias, já pronta — apenas explique):
-{json.dumps(demand_forecast, default=str, ensure_ascii=False, indent=2)}
+{model_context_json(demand_forecast)}
 
 LOTES COM RISCO DE VENCIMENTO (próximos 14 dias, os mais urgentes primeiro):
-{json.dumps(expiring[:10], default=str, ensure_ascii=False, indent=2)}
+{model_context_json(expiring[:10])}
 
 HISTÓRICO DE VENDAS (últimos 60 dias, para contexto adicional):
-{json.dumps(sales[:15], default=str, ensure_ascii=False, indent=2)}
+{model_context_json(sales[:15])}
 
 ALERTAS ATIVOS:
-{json.dumps(alerts[:5], default=str, ensure_ascii=False, indent=2)}
+{model_context_json(alerts[:5])}
 
 {weather_context}
 """
 
     messages = [
-        SystemMessage(content=f"{SYSTEM_PROMPT}\n\n--- Dados operacionais ---\n{context}"),
+        SystemMessage(content=f"{SYSTEM_PROMPT}\n{NUMBER_GUIDANCE}\n\n--- Dados operacionais ---\n{context}"),
         HumanMessage(content=f"Execute análise completa para empresa_id={empresa_id} ({scope_line}). Gere: previsão de demanda, riscos de perda, ações sugeridas e pré-lista de abastecimento."),
     ]
 
-    llm = get_llm(temperature=0.1)  # low temperature for technical analysis
+    llm = get_llm(temperature=0.1, max_tokens=1800)  # low temperature for technical analysis
     response = await llm.ainvoke(messages)
     content = response.content
 
@@ -163,6 +170,7 @@ ALERTAS ATIVOS:
     return {
         **state,
         "agent_response": content,
+        "grounding_context": context,
         "sources": [
             {"type": "sql", "ref": "mottainai.batch + sales_transaction + alert", "score": None},
             {"type": "other", "ref": "app.analytics.forecasting (média móvel ponderada com tendência)", "score": None},

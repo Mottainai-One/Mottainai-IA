@@ -2,7 +2,6 @@
 (PR: perf/parallel-agent-tool-calls), without changing what gets recorded
 in tool_runs or how a failing tool behaves."""
 import asyncio
-import time
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -33,25 +32,48 @@ def _state():
     }
 
 
+class _ConcurrentCalls:
+    """All calls must start before any can finish; independent of CPU speed."""
+
+    def __init__(self, count):
+        self.count = count
+        self.started = 0
+        self.all_started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    def tool(self, value):
+        async def call(*args, **kwargs):
+            self.started += 1
+            if self.started == self.count:
+                self.all_started.set()
+            await self.release.wait()
+            return value
+        return call
+
+    async def run(self, node):
+        task = asyncio.create_task(node(_state()))
+        try:
+            await asyncio.wait_for(self.all_started.wait(), timeout=5)
+        finally:
+            self.release.set()
+            result = await task
+        return result
+
+
 class OwnerAgentParallelismTests(unittest.IsolatedAsyncioTestCase):
     async def test_five_independent_calls_run_concurrently(self):
+        concurrent = _ConcurrentCalls(5)
         with (
-            patch("app.agents.dono.get_kpis", new=_slow({})),
-            patch("app.agents.dono.get_sales_summary", new=_slow([])),
-            patch("app.agents.dono.get_stock_alerts", new=_slow([])),
-            patch("app.agents.dono.get_kpis_by_store", new=_slow([])),
-            patch("app.agents.dono.retrieve_with_sources", new=_slow(("", []))),
+            patch("app.agents.dono.get_kpis", new=concurrent.tool({})),
+            patch("app.agents.dono.get_sales_summary", new=concurrent.tool([])),
+            patch("app.agents.dono.get_stock_alerts", new=concurrent.tool([])),
+            patch("app.agents.dono.get_kpis_by_store", new=concurrent.tool([])),
+            patch("app.agents.dono.retrieve_with_sources", new=concurrent.tool(("", []))),
             patch("app.agents.dono.get_llm") as get_llm,
         ):
             get_llm.return_value.ainvoke = AsyncMock(return_value=_StubResponse())
-            started = time.perf_counter()
-            result = await dono.node_agente_dono(_state())
-            elapsed = time.perf_counter() - started
+            result = await concurrent.run(dono.node_agente_dono)
 
-        # Sequentially these five would cost 5 * TOOL_DELAY; concurrently,
-        # about one. The midpoint keeps this from passing by accident on a
-        # slow machine or failing on a fast one.
-        self.assertLess(elapsed, TOOL_DELAY * 2.5)
         self.assertEqual(result["agent_response"], "resposta")
 
     async def test_every_tool_is_still_recorded_once(self):
@@ -93,22 +115,20 @@ class OwnerAgentParallelismTests(unittest.IsolatedAsyncioTestCase):
 
 class EmployeeAgentParallelismTests(unittest.IsolatedAsyncioTestCase):
     async def test_six_independent_calls_run_concurrently(self):
+        concurrent = _ConcurrentCalls(6)
         with (
-            patch("app.agents.funcionario.get_stock_alerts", new=_slow([])),
-            patch("app.agents.funcionario.get_inventory_status", new=_slow([])),
-            patch("app.agents.funcionario.get_expiring_batches", new=_slow([])),
-            patch("app.agents.funcionario.get_inbox", new=_slow([])),
-            patch("app.agents.funcionario.get_recent_vision_analyses", new=_slow([])),
-            patch("app.agents.funcionario.retrieve_with_sources", new=_slow(("", []))),
+            patch("app.agents.funcionario.get_stock_alerts", new=concurrent.tool([])),
+            patch("app.agents.funcionario.get_inventory_status", new=concurrent.tool([])),
+            patch("app.agents.funcionario.get_expiring_batches", new=concurrent.tool([])),
+            patch("app.agents.funcionario.get_inbox", new=concurrent.tool([])),
+            patch("app.agents.funcionario.get_recent_vision_analyses", new=concurrent.tool([])),
+            patch("app.agents.funcionario.retrieve_with_sources", new=concurrent.tool(("", []))),
             patch("app.agents.funcionario.format_notifications_for_agent", new=AsyncMock(return_value="")),
             patch("app.agents.funcionario.get_llm") as get_llm,
         ):
             get_llm.return_value.ainvoke = AsyncMock(return_value=_StubResponse())
-            started = time.perf_counter()
-            result = await funcionario.node_agente_funcionario(_state())
-            elapsed = time.perf_counter() - started
+            result = await concurrent.run(funcionario.node_agente_funcionario)
 
-        self.assertLess(elapsed, TOOL_DELAY * 2.5)
         self.assertEqual(result["agent_response"], "resposta")
 
     async def test_notification_formatting_still_runs_after_the_inbox_it_depends_on(self):

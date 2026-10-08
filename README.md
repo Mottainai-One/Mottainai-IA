@@ -204,7 +204,7 @@ GEMINI_API_KEY=
 GEMINI_VISION_MODEL=gemini-2.5-flash
 
 # Bancos
-POSTGRES_DSN=postgresql+asyncpg://mottainai:mottainai@localhost:5432/mottainai
+POSTGRES_DSN=postgresql+asyncpg://mottainai_app:configure-local-password@localhost:5432/mottainai
 MONGO_URI=mongodb://localhost:27017
 MONGO_DB=mottainai
 REDIS_URL=redis://localhost:6379/0
@@ -221,6 +221,14 @@ PUBLIC_BASE_URL=http://localhost:8000
 ENV=development
 LOG_LEVEL=INFO
 ```
+
+A conexão da API precisa de uma role `NOSUPERUSER NOBYPASSRLS`, com as políticas e `FORCE ROW LEVEL SECURITY` do schema aplicados. A API verifica isso na inicialização. Para adaptar uma instalação local existente, execute `python scripts/configure_postgres_runtime.py` com um `POSTGRES_ADMIN_DSN` administrativo no ambiente. O script cria a role dedicada `mottainai_ia`, herda os grants de `mottainai_app`, valida consultas sem tenant e grava apenas a conexão local no `.env`; não altera senhas de outras aplicações nem dados do negócio. Se a role já existir, informe sua senha atual em `POSTGRES_APP_PASSWORD`.
+
+`LLM_TOKENS_PER_MINUTE` define o espaçamento preventivo das chamadas Groq conforme o limite real da conta (0 desativa). O runtime respeita `Retry-After` em respostas 429 e limita a espera total ao timeout configurado. Aumentar esse valor não aumenta a cota do provedor.
+
+Model evidence uses compact, lossless tables for repeated records while preserving every value, row, source reference and the existing history windows. Exact duplicate RAG texts are included once; audit records and API contracts keep their original structure. Token metrics include domain-agent calls, all native tool iterations and every Judge attempt, including invalid JSON responses. These totals are more complete than the previous agent-only counters. Daily provider quotas still apply independently of request pacing.
+
+The Judge has a 1024-token output budget so reasoning models can complete the final evaluation JSON. Public agents must distinguish an unavailable loyalty rule from an unlimited validity policy. Forecast transfer suggestions require checking destination demand and logistics rather than inventing store-specific conditions. The domain response budgets remain unchanged.
 
 > `LLM_PROVIDER=ollama_local` roda 100% offline (loopback, sem enviar conversas a terceiros). Baixe o modelo antes: `ollama pull qwen2.5:7b-instruct`.
 

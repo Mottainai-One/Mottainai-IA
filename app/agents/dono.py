@@ -14,11 +14,11 @@ docstring for the fuller rationale):
 - _native: exposes the same five as LangChain tools
   (app/agents/tools_bridge.py) and lets the model decide which it needs.
 """
-import json
 from datetime import date
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from app.agents.context import NUMBER_GUIDANCE, model_context_json
 from app.agents.runtime import MottainaiState, gather_or_raise, get_llm, run_agent_with_tools
 from app.agents.tools_bridge import build_toolkit
 from app.memory.long_term import format_memory_for_prompt
@@ -95,24 +95,24 @@ async def _node_agente_dono_legacy(state: MottainaiState) -> MottainaiState:
     analytics_context = f"""Data atual: {date.today().isoformat()}
 
 KPIs (últimos 30 dias):
-- Faturamento: R$ {kpis.get('revenue_30d', 0):,.2f}
-- Custo com descartes: R$ {kpis.get('disposal_cost_30d', 0):,.2f}
+- Faturamento: {model_context_json(kpis.get('revenue_30d', 0))} BRL
+- Custo com descartes: {model_context_json(kpis.get('disposal_cost_30d', 0))} BRL
 - Alertas ativos: {kpis.get('active_alerts', 0)}
 
 KPIs POR LOJA (últimos 30 dias, para comparação entre lojas):
-{json.dumps(stores_kpis, default=str, ensure_ascii=False, indent=2)}
+{model_context_json(stores_kpis)}
 
 TOP PRODUTOS VENDIDOS (30 dias):
-{json.dumps(sales[:10], default=str, ensure_ascii=False, indent=2)}
+{model_context_json(sales[:10])}
 
 ALERTAS PENDENTES:
-{json.dumps(alerts[:5], default=str, ensure_ascii=False, indent=2)}
+{model_context_json(alerts[:5])}
 """
 
     mem_context = format_memory_for_prompt(state["memory"])
 
     messages = [
-        SystemMessage(content=f"{SYSTEM_PROMPT}\n\n--- Memória do usuário ---\n{mem_context}\n\n--- Dados analíticos ---\n{analytics_context}\n\n--- Base de conhecimento ---\n{rag_context}"),
+        SystemMessage(content=f"{SYSTEM_PROMPT}\n{NUMBER_GUIDANCE}\n\n--- Memória do usuário ---\n{mem_context}\n\n--- Dados analíticos ---\n{analytics_context}\n\n--- Base de conhecimento ---\n{rag_context}"),
         *state["history"][-8:],
         HumanMessage(content=query),
     ]
@@ -126,6 +126,7 @@ ALERTAS PENDENTES:
     return {
         **state,
         "agent_response": content,
+        "grounding_context": analytics_context + "\n" + rag_context,
         "sources": sources + [{"type": "sql", "ref": "mottainai.sales_transaction + alert + disposal + retail_store", "score": None}],
         "input_tokens": usage.get("input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),
@@ -149,7 +150,7 @@ async def _node_agente_dono_native(state: MottainaiState) -> MottainaiState:
     messages = [
         SystemMessage(
             content=(
-                f"{SYSTEM_PROMPT}\n{NATIVE_TOOL_GUIDANCE}"
+                f"{SYSTEM_PROMPT}\n{NUMBER_GUIDANCE}\n{NATIVE_TOOL_GUIDANCE}"
                 f"\n\nData atual: {date.today().isoformat()}"
                 f"\n\n--- Memória do usuário ---\n{mem_context}"
             )
