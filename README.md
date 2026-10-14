@@ -431,3 +431,24 @@ Em `ENV=production`, a inicialização exige segredos fortes para JWT/Redis e pa
 ## Licença
 
 Projeto de uso interno/privado, não destinado a publicação como software open source.
+
+### Direct Firebase authentication for mobile staff
+
+Set `FIREBASE_AUTH_ENABLED=true` and `FIREBASE_PROJECT_ID` to the Android
+Firebase project's exact ID. The mobile sends `FirebaseUser.getIdToken(false)`
+directly as the Bearer token; it does not call an SQL token-exchange route.
+The IA verifies Google's RS256 signature, project audience/issuer and timestamps.
+`app_user.firebase_uid` must already match the verified Firebase UID, and
+`app_user.email` must contain the canonical `EMAIL_SHA256_` representation of
+the normalized Firebase email. No automatic user creation or UID binding occurs.
+The existing official bootstrap resolves active user/employee/store/company
+and the database role: Administrator → DONO, Manager → GERENTE, Operator →
+ESTOQUISTA. The numeric user and company IDs and permissions come from SQL;
+client role/company claims cannot override them. Missing/revoked mappings fail
+closed. Existing signed IA JWTs remain supported.
+
+Google certificates are cached only for their published lifetime; verification
+outages return 503. Firebase tokens support local IA logout through a token
+fingerprint. Global Firebase account revocation is not queried by this verifier;
+operational account status is revalidated on every authenticated request, and
+Firebase tokens expire according to their signed expiration.

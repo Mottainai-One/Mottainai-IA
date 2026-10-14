@@ -15,7 +15,7 @@ partitions; the analytical schema has 116.
 ## Validation performed
 
 - Compilation and Ruff passed for application code and changed tests.
-- Full unittest discovery: 399 tests, OK, two opt-in PostgreSQL checks skipped
+- Full unittest discovery after Firebase integration: 409 tests, OK, two opt-in PostgreSQL checks skipped
   in this isolated unit run. The separate PostgreSQL suite passed three checks,
   including those two checks, with a non-owner runtime login.
 - Thirteen live startup/HTTP/protocol checks passed: health/live/readiness,
@@ -57,9 +57,16 @@ The native official databases contain zero business users and zero successful
 analytical publications. Live business tests used an isolated installation of
 both official schemas with synthetic users/data, separate from native data.
 
-Direct Firebase token acceptance and the Android authentication change are not
-implemented in this PR. The existing issuer must supply operational_identity;
-therefore these tests do not establish end-to-end mobile login/chat readiness.
+Direct Firebase token verification is implemented. Real Firebase logins for
+Estoquista, Gerente and Dono were verified against the existing firebase_uid
+binding in the isolated official operational installation. All three passed
+/chat and the Judge, loaded their own history, and cross-user history access
+was rejected. Identity, company and role come from SQL, never client claims.
+
+The accompanying Android change sends Firebase ID tokens directly to IA and
+removes the unavailable SQL token-exchange call. Its debug APK and unit tests
+built successfully in the isolated mobile worktree. Emulator UI verification
+is tracked separately; API verification alone does not prove every Android flow.
 
 The official analytical model does not publish maximum stock, alert priority,
 alert descriptive fields or batch codes. The IA reports them as unavailable.
@@ -71,3 +78,16 @@ and Redis. One successful parallel test does not establish a universal concurren
 guarantee. LLM output remains variable; the Judge rejects unsupported output.
 
 The PR is for review. No merge or deployment was performed.
+
+## Firebase regression validation
+
+Signature, project audience, issuer, expiration, authentication time, forged
+signatures and disabled Firebase mode were tested. SQL tests verified the
+Administrator/Manager/Operator mapping, inactive-account denial, missing UID
+binding rejection and disregard of client-supplied role/company claims.
+Certificate-service failure returns 503. Firebase token fingerprints support
+local IA logout; global Firebase revocation is not queried by this verifier.
+
+Judge evidence now separates factual constraints from presentation guidance.
+A correct manager stock answer was initially rejected for date formatting;
+the corrected evaluation passed without relaxing value, role or tenant checks.

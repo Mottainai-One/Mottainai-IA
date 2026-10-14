@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     # JWT authentication (HS256; secret required outside of the code)
     jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
+    firebase_auth_enabled: bool = False
+    firebase_project_id: str = ""
     jwt_expiration_minutes: int = 60
     jwt_issuer: str = ""
     jwt_audience: str = ""
@@ -236,6 +238,8 @@ class Settings(BaseSettings):
             )
 
         problems = []
+        if self.firebase_auth_enabled and not self.firebase_project_id.strip():
+            problems.append("FIREBASE_PROJECT_ID is required when Firebase authentication is enabled")
         if not strong(self.jwt_secret):
             problems.append("JWT_SECRET must be a non-placeholder secret with at least 32 characters")
         if self.mcp_empresa_id > 0 and not strong(self.mcp_shared_token):

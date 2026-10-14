@@ -16,6 +16,7 @@ Tokens minted without a "jti" (e.g. by an older client, or an external
 issuer that hasn't adopted the claim yet) still decode successfully — they
 just can't be individually revoked.
 """
+import hashlib
 import logging
 import re
 import time
@@ -102,6 +103,29 @@ async def revoke_token(jti: str, exp: int) -> None:
 
 async def decode_access_token(token: str) -> AuthContext:
     settings = get_settings()
+    try:
+        algorithm = jwt.get_unverified_header(token).get("alg")
+    except jwt.PyJWTError as exc:
+        raise _invalid_token() from exc
+    if algorithm == "RS256":
+        from app.database.identity import resolve_firebase_identity
+        from app.security.firebase_auth import (
+            FirebaseVerificationUnavailable,
+            verify_firebase_id_token,
+        )
+
+        try:
+            firebase = await verify_firebase_id_token(token)
+        except jwt.PyJWTError as exc:
+            raise _invalid_token() from exc
+        except FirebaseVerificationUnavailable as exc:
+            raise HTTPException(status_code=503, detail="Não foi possível validar sua sessão. Tente novamente.") from exc
+        jti = "firebase-" + hashlib.sha256(token.encode()).hexdigest()
+        if await _is_revoked(jti):
+            raise _invalid_token()
+        identity = await resolve_firebase_identity(firebase.uid, firebase.email)
+        return AuthContext(identity.user_id, identity.company_id, identity.role,
+                           jti, firebase.expires_at, identity.login_identity)
     if not is_configured_jwt_secret(settings.jwt_secret):
         raise _invalid_token()
 
