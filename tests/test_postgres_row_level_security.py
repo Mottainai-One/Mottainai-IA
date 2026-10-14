@@ -1,22 +1,8 @@
-"""
-Row Level Security enforcement (PR: fix/enforce-row-level-security).
+"""Live RLS check for the official operational database.
 
-Requires a real Postgres reachable at settings.postgres_dsn — skips (not
-fails) when it isn't, same as CI, which runs `unittest discover` with no
-Postgres service.
-
-Unlike tests/test_postgres_pool.py, this one's pass/fail is a direct
-reflection of the *deployed* state of the migration, not just the code:
-- Skips if Postgres is unreachable (CI, or no local Postgres running).
-- FAILS if Postgres is reachable but POSTGRES_DSN still connects as the
-  schema-owner/superuser role (`mottainai`) — RLS policies exist but do
-  nothing for that role, by Postgres's own design, and this is
-  precisely the bug this PR closes. This is the "test that fails
-  first" the migration is meant to prove.
-- PASSES once POSTGRES_DSN has been switched to the least-privilege
-  `mottainai_app` role created by this PR's block in
-  scripts/sql/mottainai-v6.schema.sql, with FORCE ROW LEVEL SECURITY
-  applied to the tables below.
+Opt-in checks require a non-owner login inheriting mottainai_api. Without
+an authenticated bootstrap, protected tables must expose no business rows.
+The canonical schema owns RLS policies; IA does not change its DDL.
 """
 import os
 import unittest
@@ -51,7 +37,7 @@ class RowLevelSecurityLeakTests(unittest.IsolatedAsyncioTestCase):
                 "If POSTGRES_DSN still connects as `mottainai` (the schema owner and a "
                 "Postgres superuser), this is expected to fail — RLS never applies to "
                 "that role regardless of FORCE. Point POSTGRES_DSN at a non-owner login inheriting `mottainai_api` "
-                "(created by this PR's block in scripts/sql/mottainai-v6.schema.sql) "
+                "(configured by the official runtime helper) "
                 "for this to pass.",
             )
 

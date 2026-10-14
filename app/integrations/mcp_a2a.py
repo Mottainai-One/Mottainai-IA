@@ -5,12 +5,15 @@ descriptions, error messages, agent card) are protocol-level text consumed
 by other systems/agents via MCP and A2A, not by the Mottainai retail end
 customer — so they are translated to English here.
 """
+import re
 import secrets
 from typing import Any
 
 from app.cache.rate_limit import check_endpoint_rate_limit
 from app.config import get_settings
+from app.database.identity import OperationalIdentity, current_identity
 from app.security.auth import is_configured_shared_secret
+from app.tools.analytics_tools import AnalyticsPublicationUnavailable
 from app.tools.mcp_tools import mcp_expose_tool
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
@@ -76,6 +79,26 @@ def mcp_tools() -> list[dict[str, Any]]:
     ]
 
 
+async def _authenticated_integration_tool(name, arguments, settings, scope):
+    """Bind a shared-token integration to a server-configured database account."""
+    user_id = getattr(settings, f"{scope}_user_id", 0)
+    identity = getattr(settings, f"{scope}_operational_identity", "")
+    role = getattr(settings, f"{scope}_role", "DONO")
+    if (not isinstance(user_id, int) or isinstance(user_id, bool) or user_id < 1
+            or role not in {"DONO", "GERENTE", "ESTOQUISTA"}
+            or re.fullmatch(r"EMAIL_SHA256_[A-Fa-f0-9]{64}", identity) is None):
+        return {"error": "Configure the integration's operational user and protected identity."}
+    token = current_identity.set(OperationalIdentity(user_id, arguments["empresa_id"], role, identity))
+    try:
+        return await mcp_expose_tool(name, arguments)
+    except PermissionError:
+        return {"error": "Operational identity or permissions are unavailable."}
+    except AnalyticsPublicationUnavailable:
+        return {"error": "Published analytical data are unavailable."}
+    finally:
+        current_identity.reset(token)
+
+
 async def dispatch_mcp(request: dict[str, Any], authorization: str | None) -> dict[str, Any]:
     """Processes the subset of MCP JSON-RPC required for internal tools."""
     request_id = request.get("id")
@@ -106,7 +129,7 @@ async def dispatch_mcp(request: dict[str, Any], authorization: str | None) -> di
         )
         if error:
             return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": error}}
-        result = await mcp_expose_tool(name, arguments)
+        result = await _authenticated_integration_tool(name, arguments, settings, "mcp")
         if result.get("error"):
             return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": result["error"]}}
         return {"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": str(result["result"])}], "isError": False}}
@@ -148,5 +171,5 @@ async def dispatch_a2a(message: dict[str, Any], authorization: str | None) -> di
         return {"error": {"code": "unsupported_action", "message": "Unsupported action."}}
     if error:
         return {"error": {"code": "tenant_not_authorized", "message": error}}
-    result = await mcp_expose_tool(action, payload)
+    result = await _authenticated_integration_tool(action, payload, settings, "a2a")
     return {"status": "completed", "action": action, "result": result.get("result"), "error": result.get("error")}

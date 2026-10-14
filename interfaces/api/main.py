@@ -50,7 +50,7 @@ from redis.exceptions import RedisError
 from app.agents.governanca import run_auditoria_execucoes, run_relatorio_conformidade
 from app.agents.runtime import get_llm_model_label
 from app.agents.supervisor import MottainaiState, mottainai_graph, node_guardrail_saida
-from app.cache.idempotency import InvalidIdempotencyKey, run_idempotent
+from app.cache.idempotency import InvalidIdempotencyKey, run_idempotent, scoped_write_key
 from app.cache.rate_limit import check_endpoint_rate_limit
 from app.database.mongo import get_mongo_db
 from app.database.operational_schema import OPERATIONAL_SCHEMA_READY_QUERY
@@ -74,7 +74,13 @@ from app.observability.logging_setup import (
 from app.observability.metrics import get_metrics_summary, record_execution_metrics
 from app.observability.routing_logs import record_routing_log
 from app.observability.tool_runs import record_tool_runs
-from app.security.auth import AuthContext, is_configured_jwt_secret, require_auth, require_roles
+from app.security.auth import (
+    AuthContext,
+    is_configured_jwt_secret,
+    require_auth,
+    require_operational_roles,
+    require_roles,
+)
 from app.tools.analytics_tools import AnalyticsPublicationUnavailable
 from config.settings import get_settings
 
@@ -778,7 +784,7 @@ class ReceberMercadoriaRequest(BaseModel):
 @app.post("/funcionario/descartar-lote", tags=["Funcionário"])
 async def descartar_lote(
     body: DescartarLoteRequest,
-    principal: Annotated[AuthContext, Depends(require_roles("ESTOQUISTA", "GERENTE", "DONO"))],
+    principal: Annotated[AuthContext, Depends(require_operational_roles("ESTOQUISTA", "GERENTE", "DONO"))],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ):
     """
@@ -812,7 +818,8 @@ async def descartar_lote(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
     try:
-        return await run_idempotent(principal.empresa_id, idempotency_key, _discard)
+        return await run_idempotent(principal.empresa_id, scoped_write_key(
+            principal.usuario_id, "discard_batch", idempotency_key), _discard)
     except InvalidIdempotencyKey as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -820,7 +827,7 @@ async def descartar_lote(
 @app.post("/funcionario/receber-mercadoria", tags=["Funcionário"])
 async def receber_mercadoria(
     body: ReceberMercadoriaRequest,
-    principal: Annotated[AuthContext, Depends(require_roles("ESTOQUISTA", "GERENTE", "DONO"))],
+    principal: Annotated[AuthContext, Depends(require_operational_roles("ESTOQUISTA", "GERENTE", "DONO"))],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ):
     """
@@ -847,7 +854,8 @@ async def receber_mercadoria(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     try:
-        return await run_idempotent(principal.empresa_id, idempotency_key, _receive)
+        return await run_idempotent(principal.empresa_id, scoped_write_key(
+            principal.usuario_id, "receive_inventory", idempotency_key), _receive)
     except InvalidIdempotencyKey as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 

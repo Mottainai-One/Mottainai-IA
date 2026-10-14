@@ -217,6 +217,12 @@ MCP_SHARED_TOKEN=
 A2A_SHARED_TOKEN=
 MCP_EMPRESA_ID=0                          # 0 = integração bloqueada
 A2A_EMPRESA_ID=0
+MCP_USER_ID=0
+MCP_OPERATIONAL_IDENTITY=
+MCP_ROLE=DONO
+A2A_USER_ID=0
+A2A_OPERATIONAL_IDENTITY=
+A2A_ROLE=DONO
 PUBLIC_BASE_URL=http://localhost:8000
 
 ENV=development
@@ -371,7 +377,7 @@ O sistema segue uma abordagem defensiva e orientada a controle:
 - Papel de usuário é validado antes de execução.
 - Cliente e FAQ não têm acesso a dados operacionais internos.
 - Ações de negócio exigem confirmação explícita do usuário.
-- MCP e A2A ficam bloqueados por padrão: cada token compartilhado é restrito a uma única empresa (`MCP_EMPRESA_ID` / `A2A_EMPRESA_ID`).
+- MCP e A2A ficam bloqueados por padrão: cada token compartilhado é restrito a uma empresa e a uma conta operacional ativa. Configure `*_EMPRESA_ID`, `*_USER_ID`, `*_OPERATIONAL_IDENTITY` (valor protegido `EMAIL_SHA256_...` do banco) e `*_ROLE`. O banco revalida o vínculo e as permissões a cada consulta; a identidade vem da configuração do servidor.
 - Respostas devem manter fontes e contexto de decisão quando aplicável.
 - O projeto adota fail-closed para validação e reforço de segurança.
 

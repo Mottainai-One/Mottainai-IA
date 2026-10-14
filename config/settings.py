@@ -175,6 +175,12 @@ class Settings(BaseSettings):
     a2a_shared_token: str = ""
     mcp_empresa_id: int = 0
     a2a_empresa_id: int = 0
+    mcp_user_id: int = 0
+    mcp_operational_identity: str = ""
+    mcp_role: str = "DONO"
+    a2a_user_id: int = 0
+    a2a_operational_identity: str = ""
+    a2a_role: str = "DONO"
     public_base_url: str = "http://localhost:8000"
 
     # Outbound webhook for CRITICAL alerts (push, unlike the Redis inbox in

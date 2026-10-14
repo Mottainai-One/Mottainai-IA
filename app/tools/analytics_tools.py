@@ -33,10 +33,19 @@ async def _read(sql, *, empresa_id, params=None, store_id=None):
     scope = None if admin else actor["store_id"]
     async with get_analytics_session() as session:
         publication = (await session.execute(text(
-            "SELECT source_cutoff_at, snapshot_date FROM mottainai_analytics.vw_published_batch"
-        ))).mappings().first()
+            """SELECT source_cutoff_at, snapshot_date
+               FROM mottainai_analytics.vw_published_batch
+               WHERE EXISTS (
+                   SELECT 1 FROM mottainai_analytics.dim_store s
+                   JOIN mottainai_analytics.dim_company c ON c.company_id=s.company_id
+                   WHERE s.company_id=:empresa_id AND s.active AND c.active
+                     AND (CAST(:scope_store_id AS bigint) IS NULL OR s.store_id=CAST(:scope_store_id AS bigint))
+                     AND (CAST(:requested_store_id AS bigint) IS NULL OR s.store_id=CAST(:requested_store_id AS bigint))
+               )"""
+        ), {"empresa_id": empresa_id, "scope_store_id": scope,
+             "requested_store_id": store_id})).mappings().first()
         if publication is None:
-            raise AnalyticsPublicationUnavailable("No successful analytical publication")
+            raise AnalyticsPublicationUnavailable("No published analytical data for the authorized scope")
         query = """
             WITH allowed_stores AS (
                 SELECT s.store_id, s.name

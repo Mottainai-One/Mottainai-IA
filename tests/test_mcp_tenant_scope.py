@@ -1,5 +1,5 @@
-from types import SimpleNamespace
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.integrations.mcp_a2a import dispatch_a2a, dispatch_mcp
@@ -11,7 +11,7 @@ A2A_TOKEN = "a" * 32
 
 class McpTenantScopeContracts(unittest.IsolatedAsyncioTestCase):
     async def test_mcp_rejects_a_different_company_before_tool_execution(self):
-        settings = SimpleNamespace(mcp_shared_token=MCP_TOKEN, mcp_empresa_id=7)
+        settings = SimpleNamespace(mcp_shared_token=MCP_TOKEN, mcp_empresa_id=7, mcp_user_id=1, mcp_operational_identity='EMAIL_SHA256_'+'2'*64)
         with (
             patch("app.integrations.mcp_a2a.get_settings", return_value=settings),
             patch("app.integrations.mcp_a2a.mcp_expose_tool", new=AsyncMock()) as expose,
@@ -29,7 +29,7 @@ class McpTenantScopeContracts(unittest.IsolatedAsyncioTestCase):
         expose.assert_not_awaited()
 
     async def test_mcp_overrides_missing_company_with_token_scope(self):
-        settings = SimpleNamespace(mcp_shared_token=MCP_TOKEN, mcp_empresa_id=7)
+        settings = SimpleNamespace(mcp_shared_token=MCP_TOKEN, mcp_empresa_id=7, mcp_user_id=1, mcp_operational_identity='EMAIL_SHA256_'+'2'*64)
         with (
             patch("app.integrations.mcp_a2a.get_settings", return_value=settings),
             patch(
@@ -46,7 +46,7 @@ class McpTenantScopeContracts(unittest.IsolatedAsyncioTestCase):
         expose.assert_awaited_once_with("get_active_alerts", {"empresa_id": 7})
 
     async def test_a2a_rejects_a_different_company_before_tool_execution(self):
-        settings = SimpleNamespace(a2a_shared_token=A2A_TOKEN, a2a_empresa_id=7)
+        settings = SimpleNamespace(a2a_shared_token=A2A_TOKEN, a2a_empresa_id=7, a2a_user_id=1, a2a_operational_identity='EMAIL_SHA256_'+'2'*64)
         with (
             patch("app.integrations.mcp_a2a.get_settings", return_value=settings),
             patch("app.integrations.mcp_a2a.mcp_expose_tool", new=AsyncMock()) as expose,
@@ -60,7 +60,7 @@ class McpTenantScopeContracts(unittest.IsolatedAsyncioTestCase):
         expose.assert_not_awaited()
 
     async def test_a2a_uses_company_bound_to_token(self):
-        settings = SimpleNamespace(a2a_shared_token=A2A_TOKEN, a2a_empresa_id=7)
+        settings = SimpleNamespace(a2a_shared_token=A2A_TOKEN, a2a_empresa_id=7, a2a_user_id=1, a2a_operational_identity='EMAIL_SHA256_'+'2'*64)
         with (
             patch("app.integrations.mcp_a2a.get_settings", return_value=settings),
             patch(

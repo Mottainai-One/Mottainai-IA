@@ -83,18 +83,18 @@ def interpret_weather_for_demand(forecast: list[dict]) -> str:
 
     lines = [f"Previsão para os próximos {total} dias:"]
 
-    if hot_days >= total // 2:
+    if total and hot_days >= max(1, total // 2):
         lines.append(
             f"- {hot_days}/{total} dias com temperatura alta (≥28°C). "
-            "AUMENTAR estoque de bebidas geladas, sorvetes e produtos refrescantes."
+            "Avaliar produtos sensíveis ao calor usando o histórico de vendas; o clima sozinho não determina reposição."
         )
-    if rainy_days >= total // 3:
+    if total and rainy_days >= max(1, total // 3):
         lines.append(
             f"- {rainy_days}/{total} dias com chuva. "
-            "ESPERAR queda de até 20% no fluxo em lojas físicas. "
-            "Reduzir pré-lista de abastecimento para produtos de alto giro externo."
+            "Chuva prevista; não há dados para estimar impacto no fluxo ou nas vendas. "
+            "Manter a reposição baseada no histórico e estoque disponível."
         )
     if hot_days < 2 and rainy_days < 2:
-        lines.append("- Clima estável. Demanda esperada dentro do padrão histórico.")
+        lines.append("- Sem muitos dias de calor ou chuva nesta previsão; impacto na demanda não foi estimado.")
 
     return "\n".join(lines)

@@ -166,3 +166,18 @@ def require_roles(*roles: str):
         return principal
 
     return dependency
+
+
+def require_operational_roles(*roles: str):
+    """Revalidate the database account before any write or cached replay."""
+    role_dependency = require_roles(*roles)
+
+    async def dependency(principal: Annotated[AuthContext, Depends(role_dependency)]) -> AuthContext:
+        from app.database.identity import initialize_pg_context
+        from app.database.postgres import get_pg_session
+
+        async with get_pg_session() as session:
+            await initialize_pg_context(session, principal.empresa_id)
+        return principal
+
+    return dependency

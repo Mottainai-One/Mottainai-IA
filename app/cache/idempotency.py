@@ -17,6 +17,7 @@ result) would close that too, but nothing in the reported bug requires
 it, and it would make failure handling (crash while holding the lock)
 part of this change's surface for a scenario it isn't fixing.
 """
+import hashlib
 import json
 from decimal import Decimal
 from typing import Any, Awaitable, Callable, TypeVar
@@ -87,3 +88,9 @@ async def run_idempotent(empresa_id: int, key: str, fn: Callable[[], Awaitable[T
         ex=settings.idempotency_ttl_seconds,
     )
     return result
+
+
+def scoped_write_key(user_id: int, operation: str, key: str) -> str:
+    """Keep retries private to their actor and operation, even within one company."""
+    validate_idempotency_key(key)
+    return hashlib.sha256(f"{user_id}:{operation}:{key}".encode()).hexdigest()

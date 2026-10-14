@@ -10,7 +10,7 @@ NUMBER_GUIDANCE = (
     "Uma lista limitada não representa todo o estoque."
     " Tabelas usam columns/rows: cada linha segue a ordem das colunas; "
     "shared contém campos iguais em todas as linhas."
-    " Dados com data_source=analytics são snapshots: informe snapshot_date/source_cutoff_at e não os apresente como estoque em tempo real. Valores null estão indisponíveis; não invente máximos, códigos de lote ou detalhes de alertas."
+    " Dados com data_source=analytics são snapshots: informe snapshot_date/source_cutoff_at e não os apresente como estoque em tempo real. Use apenas 'dados publicados em [data]', sem nomes de bancos, campos técnicos ou identificadores internos. Nunca escreva null, priority, snapshot, data_source ou cutoff; diga informação indisponível e dados publicados em [data]. Valores null estão indisponíveis; não invente máximos, códigos de lote ou detalhes de alertas. Prioridade null não permite classificar um alerta como crítico, alto ou baixo; informe que a prioridade não está disponível."
 )
 
 
