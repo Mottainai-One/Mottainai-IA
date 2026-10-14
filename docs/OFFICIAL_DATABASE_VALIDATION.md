@@ -65,8 +65,10 @@ was rejected. Identity, company and role come from SQL, never client claims.
 
 The accompanying Android change sends Firebase ID tokens directly to IA and
 removes the unavailable SQL token-exchange call. Its debug APK and unit tests
-built successfully in the isolated mobile worktree. Emulator UI verification
-is tracked separately; API verification alone does not prove every Android flow.
+built successfully in the isolated mobile worktree. The opt-in Android
+instrumentation test also passed for all three staff roles: real login, IA/Chat
+navigation, message submission and visible response with the expected values.
+Screenshots were captured. This validates login/chat, not every other mobile feature.
 
 The official analytical model does not publish maximum stock, alert priority,
 alert descriptive fields or batch codes. The IA reports them as unavailable.
