@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/Mottainai-One/Mottainai-Banco-Operacional",
+  "branch": "develop",
+  "commit": "bc3d5cfe56f60cb750a87dd7d22a7eacf90c3868",
+  "installer": "database/operational/install.sql",
+  "incremental_update": "database/operational/update_existing_api_rpa.sql",
+  "schema": "mottainai",
+  "analytics_installer": "database/analytics/install.sql",
+  "analytics_schema": "mottainai_analytics"
+}

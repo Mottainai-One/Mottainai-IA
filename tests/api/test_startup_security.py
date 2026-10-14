@@ -26,6 +26,7 @@ class StartupJwtSecretTests(unittest.IsolatedAsyncioTestCase):
                     Settings(_env_file=None, env="development", jwt_secret=secret),
                 ),
                 patch("app.database.postgres.validate_pg_security", new_callable=AsyncMock),
+            patch("app.database.analytics.validate_analytics_security", new_callable=AsyncMock),
             patch("app.rag.retriever.get_embedding_model") as load_model,
             ):
                 with self.assertRaisesRegex(RuntimeError, "JWT_SECRET"):
@@ -41,6 +42,7 @@ class StartupJwtSecretTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("interfaces.api.main.settings", settings),
             patch("app.database.postgres.validate_pg_security", new_callable=AsyncMock),
+            patch("app.database.analytics.validate_analytics_security", new_callable=AsyncMock),
             patch("app.rag.retriever.get_embedding_model") as load_model,
             patch("app.database.redis_client.close_redis_pool", new_callable=AsyncMock) as close_pool,
             patch("app.database.mongo.close_mongo_client", new_callable=AsyncMock),

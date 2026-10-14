@@ -10,6 +10,7 @@ NUMBER_GUIDANCE = (
     "Uma lista limitada não representa todo o estoque."
     " Tabelas usam columns/rows: cada linha segue a ordem das colunas; "
     "shared contém campos iguais em todas as linhas."
+    " Dados com data_source=analytics são snapshots: informe snapshot_date/source_cutoff_at e não os apresente como estoque em tempo real. Valores null estão indisponíveis; não invente máximos, códigos de lote ou detalhes de alertas."
 )
 
 

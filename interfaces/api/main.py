@@ -75,6 +75,7 @@ from app.observability.metrics import get_metrics_summary, record_execution_metr
 from app.observability.routing_logs import record_routing_log
 from app.observability.tool_runs import record_tool_runs
 from app.security.auth import AuthContext, is_configured_jwt_secret, require_auth, require_roles
+from app.tools.analytics_tools import AnalyticsPublicationUnavailable
 from config.settings import get_settings
 
 settings = get_settings()
@@ -100,6 +101,8 @@ async def lifespan(app: FastAPI):
 
     from app.database.postgres import validate_pg_security
     await validate_pg_security()
+    from app.database.analytics import validate_analytics_security
+    await validate_analytics_security()
     # Startup: warm up embedding model
     from app.rag.retriever import get_embedding_model
     await asyncio.to_thread(get_embedding_model)
@@ -107,6 +110,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         from app.agents.runtime import close_llm_clients
+        from app.database.analytics import close_analytics_engine
         from app.database.mongo import close_mongo_client
         from app.database.postgres import close_pg_engine
         from app.database.redis_client import close_redis_pool
@@ -114,6 +118,7 @@ async def lifespan(app: FastAPI):
             close_redis_pool(),
             close_mongo_client(),
             close_pg_engine(),
+            close_analytics_engine(),
             close_llm_clients(),
         )
 
@@ -168,6 +173,8 @@ async def correlation_id_middleware(request: Request, call_next):
     while handling it — guardrails, supervisor routing, the agent, the
     Judge — can be grepped together. Echoed back in the response header.
     """
+    from app.database.identity import current_identity
+    identity_token = current_identity.set(None)
     incoming_id = request.headers.get("x-request-id", "")
     correlation_id = (
         incoming_id
@@ -191,6 +198,7 @@ async def correlation_id_middleware(request: Request, call_next):
             (time.perf_counter() - started) * 1000,
         )
         clear_correlation_id()
+        current_identity.reset(identity_token)
 
 
 # ─────────────────────────────────────────────
@@ -263,12 +271,18 @@ async def _dependency_checks() -> dict[str, str]:
         except Exception:
             return "unavailable"
 
-    mongodb, redis, postgres = await asyncio.gather(
+    async def check_analytics() -> str:
+        from app.database.analytics import validate_analytics_security
+        await validate_analytics_security()
+        return "ok"
+
+    mongodb, redis, postgres, analytics = await asyncio.gather(
         bounded(check_mongodb),
         bounded(check_redis),
         bounded(check_postgres),
+        bounded(check_analytics),
     )
-    return {"mongodb": mongodb, "redis": redis, "postgres": postgres}
+    return {"mongodb": mongodb, "redis": redis, "postgres": postgres, "analytics": analytics}
 
 
 async def _enforce_endpoint_rate_limit(
@@ -322,6 +336,18 @@ def _validate_uploaded_image(image_bytes: bytes, declared_content_type: str | No
     if normalized_declared != actual_content_type:
         raise ValueError("O conteúdo da imagem não corresponde ao tipo informado.")
     return actual_content_type
+
+
+@app.exception_handler(AnalyticsPublicationUnavailable)
+async def analytical_publication_handler(request: Request, exc: AnalyticsPublicationUnavailable) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": "Os dados analíticos ainda não têm uma carga publicada. Tente novamente mais tarde."})
+
+
+@app.exception_handler(PermissionError)
+async def operational_access_handler(request: Request, exc: PermissionError) -> JSONResponse:
+    return JSONResponse(status_code=403, content={
+        "detail": "Não foi possível validar seu vínculo ou suas permissões no banco operacional.",
+    })
 
 
 @app.exception_handler(Exception)
@@ -774,7 +800,7 @@ async def descartar_lote(
                 empresa_id=principal.empresa_id,
                 store_id=body.store_id,
                 batch_id=body.batch_id,
-                employee_id=principal.usuario_id,
+                user_id=principal.usuario_id,
                 quantity=body.quantity,
                 reason=body.reason,
                 role=principal.role,
@@ -813,7 +839,7 @@ async def receber_mercadoria(
                 empresa_id=principal.empresa_id,
                 store_id=body.store_id,
                 batch_id=body.batch_id,
-                employee_id=principal.usuario_id,
+                user_id=principal.usuario_id,
                 quantity=body.quantity,
                 observation=body.observation,
             )

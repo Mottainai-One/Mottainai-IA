@@ -121,7 +121,7 @@ Diagrama completo, com todos os agentes lado a lado, em [ARQUITETURA.md](ARQUITE
 | LLM alternativo | [Ollama](https://ollama.com/) Cloud (`gpt-oss:20b`) ou local (`qwen2.5:7b-instruct`) | — | Fallback cloud ou modo 100% offline, sem enviar dados a terceiros |
 | Visão computacional | [Gemini](https://ai.google.dev/) (`gemini-2.5-flash`) + [Pillow](https://python-pillow.org/) | 11.1 | Análise visual de prateleira |
 | Embeddings | [Sentence Transformers](https://sbert.net/) (`all-MiniLM-L6-v2`) + [PyTorch](https://pytorch.org/) | 3.4 / 2.6 | Embeddings locais para RAG, sem custo de API |
-| Dados operacionais | [PostgreSQL](https://www.postgresql.org/) via [asyncpg](https://github.com/MagicStack/asyncpg) + [SQLAlchemy async](https://www.sqlalchemy.org/) | 0.30 / 2.0 | Fonte da verdade do negócio (schema v6) |
+| Dados operacionais | [PostgreSQL](https://www.postgresql.org/) via [asyncpg](https://github.com/MagicStack/asyncpg) + [SQLAlchemy async](https://www.sqlalchemy.org/) | 0.30 / 2.0 | Fonte operacional: Mottainai-Banco-Operacional develop |
 | Dados de IA | [MongoDB](https://www.mongodb.com/) via [Motor](https://motor.readthedocs.io/) | 3.7 | Histórico, memória de longo prazo, RAG e auditoria |
 | Cache e rate limit | [Redis](https://redis.io/) via [redis-py async](https://github.com/redis/redis-py) | 5.2 | Rate limit, cache de RAG e notificações |
 | Clima | [Open-Meteo](https://open-meteo.com/) | — | Previsão do tempo para o Motor Preditivo (sem API key) |
@@ -158,7 +158,7 @@ mottainai-ia/
 │   └── api/
 │       └── main.py            # API principal FastAPI
 ├── scripts/
-│   ├── sql/                   # Schema v6, dataload e verificação
+│   ├── sql/                   # Referência oficial e verificação somente leitura
 │   ├── mongo/                 # Schema das collections MongoDB
 │   ├── windows/               # Bootstrap para Windows
 │   ├── generate_dev_token.py  # Token JWT de desenvolvimento
@@ -204,7 +204,8 @@ GEMINI_API_KEY=
 GEMINI_VISION_MODEL=gemini-2.5-flash
 
 # Bancos
-POSTGRES_DSN=postgresql+asyncpg://mottainai_app:configure-local-password@localhost:5432/mottainai
+POSTGRES_DSN=postgresql+asyncpg://mottainai_ia:configure-local-password@localhost:5432/mottainai_operational
+ANALYTICS_POSTGRES_DSN=postgresql+asyncpg://mottainai_ia_read:configure-local-password@localhost:5432/mottainai_analytics
 MONGO_URI=mongodb://localhost:27017
 MONGO_DB=mottainai
 REDIS_URL=redis://localhost:6379/0
@@ -222,7 +223,7 @@ ENV=development
 LOG_LEVEL=INFO
 ```
 
-A conexão da API precisa de uma role `NOSUPERUSER NOBYPASSRLS`, com as políticas e `FORCE ROW LEVEL SECURITY` do schema aplicados. A API verifica isso na inicialização. Para adaptar uma instalação local existente, execute `python scripts/configure_postgres_runtime.py` com um `POSTGRES_ADMIN_DSN` administrativo no ambiente. O script cria a role dedicada `mottainai_ia`, herda os grants de `mottainai_app`, valida consultas sem tenant e grava apenas a conexão local no `.env`; não altera senhas de outras aplicações nem dados do negócio. Se a role já existir, informe sua senha atual em `POSTGRES_APP_PASSWORD`.
+A conexão da API precisa de uma role `NOSUPERUSER NOBYPASSRLS`, herdando `mottainai_api`, sem ser proprietária das tabelas, com as políticas RLS oficiais aplicadas. A API verifica isso na inicialização. Para adaptar uma instalação local existente, execute `python scripts/configure_postgres_runtime.py` com um `POSTGRES_ADMIN_DSN` administrativo no ambiente. O script cria a role dedicada `mottainai_ia`, herda os grants oficiais de `mottainai_api`, valida consultas sem tenant e grava apenas a conexão local no `.env`; não altera senhas de outras aplicações nem dados do negócio. Se a role já existir, informe sua senha atual em `POSTGRES_APP_PASSWORD`.
 
 `LLM_TOKENS_PER_MINUTE` define o espaçamento preventivo das chamadas Groq conforme o limite real da conta (0 desativa). O runtime respeita `Retry-After` em respostas 429 e limita a espera total ao timeout configurado. Aumentar esse valor não aumenta a cota do provedor.
 
@@ -271,9 +272,13 @@ docker compose up -d postgres mongo
 ### 2. Schema e dados
 
 ```bash
-# PostgreSQL — schema operacional v6 + dados de exemplo
-psql -h localhost -U mottainai -d mottainai -f scripts/sql/mottainai-v6.schema.sql
-psql -h localhost -U mottainai -d mottainai -f scripts/sql/mottainai-v6.dataload.sql
+# Clone o repositório oficial e use a versão registrada em operational-source.json.
+git clone --branch develop https://github.com/Mottainai-One/Mottainai-Banco-Operacional.git ../Mottainai-Banco-Operacional
+git -C ../Mottainai-Banco-Operacional checkout bc3d5cfe56f60cb750a87dd7d22a7eacf90c3868
+# Instalação apenas em banco NOVO, pela equipe de dados:
+psql -v ON_ERROR_STOP=1 -d mottainai_operational -f ../Mottainai-Banco-Operacional/database/operational/install.sql
+# Banco existente: revisar e aplicar o update_existing_api_rpa.sql oficial.
+# Nunca aplicar a antiga carga script/dataLoad.sql sobre o schema protegido.
 
 # valida o schema sem alterar nada (read-only)
 bash scripts/setup_postgres.sh
@@ -285,7 +290,19 @@ python scripts/setup_mongo.py --seed-demo
 python scripts/generate_embeddings.py
 ```
 
-> O schema oficial é versionado no repositório do banco operacional; os arquivos em `scripts/sql/` são a cópia de referência para desenvolvimento local.
+> A estrutura pertence exclusivamente ao repositório [Mottainai-Banco-Operacional](https://github.com/Mottainai-One/Mottainai-Banco-Operacional/tree/develop/database/operational). A IA não cria, remove nem altera tabelas. Os antigos instaladores/cargas v6 estão desativados; `scripts/sql/operational-source.json` registra a versão do contrato. MongoDB continua responsável por conversas/RAG e Redis por cache.
+
+O **operacional** valida identidade/permissões e executa recebimentos/descartes confirmados. O **analítico** atende todas as consultas de negócio do mobile/IA em transações somente leitura, com filtro de empresa e das lojas autorizadas. São conexões separadas: não há fallback de leitura para o operacional. As respostas usam a data da publicação bem-sucedida em `vw_published_batch`; ausência de carga retorna indisponibilidade. A IA não executa o ETL nem atualiza o analítico.
+
+Instale o segundo banco usando `database/analytics/install.sql` do mesmo commit. Dê ao login analítico somente `USAGE` no schema e `SELECT` em `dim_company`, `dim_store`, `dim_product`, `fact_sales`, `fact_sale_item`, `fact_loss_destination`, `fact_alert_snapshot`, `vw_published_batch` e `fact_inventory_snapshot`. O processo de carga usa outra credencial.
+
+O snapshot não fornece quantidade máxima, código textual do lote nem título/descrição/prioridade dos alertas. Esses campos retornam `null`; a IA deve comunicar que estão indisponíveis. O snapshot nunca substitui a revalidação de saldo no operacional antes de uma escrita.
+
+As consultas operacionais precisam de uma identidade autenticada. No contrato JWT atual, o emissor deve incluir `operational_identity` com o identificador de login protegido já existente em `app_user.email` (`EMAIL_SHA256_` + 64 dígitos hexadecimais). Ele nunca vem do corpo da requisição. A IA chama `fn_bootstrap_staff_context`, compara usuário, empresa e cargo atuais com os claims verificados e deixa o RLS limitar as lojas. Sem vínculo válido, o acesso é recusado.
+
+`sub` corresponde a `app_user.user_id`; movimentações usam o `employee_id` vinculado, que pode ser diferente. `Administrator`, `Manager` e `Operator` correspondem a `DONO`, `GERENTE` e `ESTOQUISTA`. Outros cargos não recebem permissões por aproximação.
+
+O banco já fornece `app_user.firebase_uid`; esta adaptação não cria campos nem implementa a mudança do mobile para Firebase direto. Essa integração exige validar o token Firebase e conferir o UID contra o vínculo existente, preservando o bootstrap oficial.
 
 ### 3. API
 

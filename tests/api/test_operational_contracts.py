@@ -20,25 +20,25 @@ from app.memory.short_term import SessionOwnershipError
 from app.security.auth import AuthContext
 from config.settings import Settings
 from interfaces.api.main import (
-    _enforce_endpoint_rate_limit,
+    ChatRequest,
+    DescartarLoteRequest,
+    RagDocumentUploadRequest,
+    ReceberMercadoriaRequest,
     _dependency_checks,
+    _enforce_endpoint_rate_limit,
     analyze_shelf_image,
     app,
     chat,
-    ChatRequest,
     correlation_id_middleware,
+    delete_rag_document,
     descartar_lote,
-    DescartarLoteRequest,
     health_check,
     live_check,
     logout,
     readiness_check,
-    RagDocumentUploadRequest,
     receber_mercadoria,
-    ReceberMercadoriaRequest,
     trigger_motor_preditivo,
     unhandled_exception_handler,
-    delete_rag_document,
     upload_rag_document,
 )
 
@@ -160,10 +160,11 @@ class OperationalContractTests(unittest.IsolatedAsyncioTestCase):
             patch("interfaces.api.main.get_mongo_db", return_value=Database()),
             patch("app.database.redis_client.get_redis", return_value=Redis()),
             patch("app.database.postgres.get_pg_session", return_value=SessionContext()),
+            patch("app.database.analytics.validate_analytics_security", new=AsyncMock()),
         ):
             checks = await _dependency_checks()
 
-        self.assertEqual(checks, {"mongodb": "ok", "redis": "ok", "postgres": "ok"})
+        self.assertEqual(checks, {"mongodb": "ok", "redis": "ok", "postgres": "ok", "analytics": "ok"})
         self.assertIn("to_regclass('mottainai.inventory')", statements[0])
         self.assertIn("to_regclass('mottainai.alert')", statements[0])
         self.assertIn("to_regclass('mottainai.disposal_item')", OPERATIONAL_SCHEMA_READY_QUERY)
@@ -254,7 +255,7 @@ class EmployeeWriteRoutesTests(unittest.IsolatedAsyncioTestCase):
             )
 
         tool.assert_awaited_once_with(
-            empresa_id=42, store_id=1, batch_id=7, employee_id=9,
+            empresa_id=42, store_id=1, batch_id=7, user_id=9,
             quantity=Decimal("3"), reason="vencido", role="ESTOQUISTA", observation=None,
         )
         self.assertEqual(result["disposal_id"], 1)
@@ -311,7 +312,7 @@ class EmployeeWriteRoutesTests(unittest.IsolatedAsyncioTestCase):
             )
 
         tool.assert_awaited_once_with(
-            empresa_id=42, store_id=1, batch_id=7, employee_id=9,
+            empresa_id=42, store_id=1, batch_id=7, user_id=9,
             quantity=Decimal("20"), observation=None,
         )
         self.assertEqual(result["new_inventory_balance"], Decimal("50"))

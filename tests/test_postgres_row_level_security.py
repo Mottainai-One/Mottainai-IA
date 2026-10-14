@@ -18,17 +18,17 @@ reflection of the *deployed* state of the migration, not just the code:
   scripts/sql/mottainai-v6.schema.sql, with FORCE ROW LEVEL SECURITY
   applied to the tables below.
 """
+import os
 import unittest
 
 from sqlalchemy import text
 
-from app.config import get_settings
 from app.database.postgres import engine
 
 
+@unittest.skipUnless(os.getenv("MOTTAINAI_POSTGRES_INTEGRATION_TESTS") == "1", "Opt-in PostgreSQL integration check")
 class RowLevelSecurityLeakTests(unittest.IsolatedAsyncioTestCase):
     async def test_query_without_a_tenant_filter_sees_no_rows(self):
-        settings = get_settings()
         try:
             async with engine.connect() as conn:
                 # No set_config('app.current_company_id', ...) call at
@@ -41,7 +41,7 @@ class RowLevelSecurityLeakTests(unittest.IsolatedAsyncioTestCase):
                     counts[table] = result.scalar()
         except Exception as exc:  # pragma: no cover - environment-dependent
             await engine.dispose()
-            self.skipTest(f"Postgres unreachable at {settings.postgres_dsn!r}: {exc}")
+            self.skipTest(f"Postgres check unavailable ({type(exc).__name__})")
 
         for table, count in counts.items():
             self.assertEqual(
@@ -50,7 +50,7 @@ class RowLevelSecurityLeakTests(unittest.IsolatedAsyncioTestCase):
                 f"{table}: expected 0 rows without a tenant filter under RLS, got {count}. "
                 "If POSTGRES_DSN still connects as `mottainai` (the schema owner and a "
                 "Postgres superuser), this is expected to fail — RLS never applies to "
-                "that role regardless of FORCE. Point POSTGRES_DSN at `mottainai_app` "
+                "that role regardless of FORCE. Point POSTGRES_DSN at a non-owner login inheriting `mottainai_api` "
                 "(created by this PR's block in scripts/sql/mottainai-v6.schema.sql) "
                 "for this to pass.",
             )

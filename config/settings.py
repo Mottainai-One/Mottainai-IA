@@ -31,9 +31,12 @@ class Settings(BaseSettings):
 
     # Databases
     postgres_dsn: str = Field(
-        default="postgresql+asyncpg://mottainai_app:configure-local-password@localhost:5432/mottainai",
+        default="postgresql+asyncpg://mottainai_ia:configure-local-password@localhost:5432/mottainai_operational",
         validation_alias=AliasChoices("POSTGRES_DSN", "DATABASE_URL"),
     )
+    analytics_postgres_dsn: str = ""
+    postgres_container_dsn: str = ""
+    analytics_postgres_container_dsn: str = ""
     mongo_uri: str = Field(
         default="mongodb://localhost:27017",
         validation_alias=AliasChoices("MONGO_URI", "MONGO_URL"),

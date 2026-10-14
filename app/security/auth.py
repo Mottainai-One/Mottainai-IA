@@ -17,6 +17,7 @@ issuer that hasn't adopted the claim yet) still decode successfully — they
 just can't be individually revoked.
 """
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Annotated
@@ -43,6 +44,7 @@ class AuthContext:
     role: str
     jti: str | None = None
     exp: int | None = None
+    operational_identity: str | None = None
 
 
 def _invalid_token() -> HTTPException:
@@ -120,6 +122,12 @@ async def decode_access_token(token: str) -> AuthContext:
             raise ValueError
         jti = claims.get("jti")
         exp = claims.get("exp")
+        operational_identity = claims.get("operational_identity")
+        if operational_identity is not None and (
+            not isinstance(operational_identity, str)
+            or re.fullmatch(r"EMAIL_SHA256_[A-Fa-f0-9]{64}", operational_identity) is None
+        ):
+            raise ValueError
         if jti and await _is_revoked(str(jti)):
             raise ValueError
         return AuthContext(
@@ -128,6 +136,7 @@ async def decode_access_token(token: str) -> AuthContext:
             role=role,
             jti=str(jti) if jti else None,
             exp=_positive_int(exp) if exp else None,
+            operational_identity=operational_identity,
         )
     except (jwt.PyJWTError, KeyError, TypeError, ValueError) as exc:
         raise _invalid_token() from exc
@@ -138,7 +147,14 @@ async def require_auth(
 ) -> AuthContext:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise _invalid_token()
-    return await decode_access_token(credentials.credentials)
+    principal = await decode_access_token(credentials.credentials)
+    from app.database.identity import OperationalIdentity, current_identity
+    current_identity.set(
+        OperationalIdentity(principal.usuario_id, principal.empresa_id,
+                            principal.role, principal.operational_identity)
+        if principal.operational_identity and principal.role != "CLIENTE" else None
+    )
+    return principal
 
 
 def require_roles(*roles: str):
