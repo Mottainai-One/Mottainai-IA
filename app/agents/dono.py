@@ -127,7 +127,7 @@ ALERTAS PENDENTES:
         **state,
         "agent_response": content,
         "grounding_context": analytics_context + "\n" + rag_context,
-        "sources": sources + [{"type": "sql", "ref": "mottainai.sales_transaction + alert + disposal + retail_store", "score": None}],
+        "sources": sources + [{"type": "sql", "ref": "mottainai_analytics.fact_sales + fact_alert_snapshot + fact_loss_destination + dim_store", "score": None}],
         "input_tokens": usage.get("input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),
         "tool_runs": state.get("tool_runs", []) + tool_runs,

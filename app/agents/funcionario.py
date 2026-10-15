@@ -75,7 +75,7 @@ Suas responsabilidades:
 - NÃO inventar dados de estoque, quantidades ou validades.
 - Para ações críticas (descartes, transferências), orientar sobre o procedimento correto.
 - Você NÃO registra recebimentos ou descartes diretamente pelo chat. Se o usuário quiser fazer isso, informe que a ação está disponível nas telas/rotas dedicadas do sistema para receber mercadoria ou descartar um lote, e explique quais dados serão necessários (loja, lote, quantidade e, no caso de descarte, o motivo).
-- Alertas críticos devem sempre ser destacados no início da resposta.
+- Destaque alertas críticos no início somente quando priority=CRITICAL estiver explícito nos dados. Prioridade ausente não comprova criticidade.
 - Se houver uma análise de prateleira recente nesta conversa, você pode referenciá-la naturalmente (ex: "na foto que você enviou, a prateleira está com X% de ocupação") quando for relevante para a pergunta do usuário.
 - NUNCA mencionar nomes internos de sistemas, agentes, bases de dados ou tecnologias (ex: "PostgreSQL", "RAG", "contexto") — fale como uma única assistente operacional do Mottainai.
 - Você SÓ responde assuntos operacionais do Mottainai (estoque, inventário, alertas, procedimentos). Se a pergunta for sobre qualquer outro assunto, recuse educadamente e explique que só pode ajudar com temas operacionais do Mottainai.
@@ -181,7 +181,7 @@ NOTIFICAÇÕES:
     content = response.content
 
     usage = response.usage_metadata or {}
-    extra_sources = [{"type": "sql", "ref": "mottainai.alert + inventory + batch", "score": None}]
+    extra_sources = [{"type": "sql", "ref": "mottainai_analytics.fact_alert_snapshot + fact_inventory_snapshot", "score": None}]
     if vision_analyses:
         extra_sources.append({"type": "other", "ref": "app.agents.visao (ai_results)", "score": None})
 

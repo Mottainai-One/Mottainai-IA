@@ -1,5 +1,6 @@
 """Predictive Engine node behavior: alert notifications and store scoping."""
 import unittest
+from datetime import date, datetime
 from unittest.mock import AsyncMock, patch
 
 from tests.prompt_support import read_json_block
@@ -21,7 +22,7 @@ class MotorPreditivoNotificationTests(unittest.IsolatedAsyncioTestCase):
     async def test_forwards_fetched_alerts_to_the_notifier(self):
         from app.agents import motor_preditivo
 
-        alerts = [{"id": "1", "priority": "CRITICAL"}]
+        alerts = [{"id": "1", "priority": "CRITICAL", "snapshot_date": date(2026, 10, 14)}]
         notify = AsyncMock(return_value=1)
 
         with (
@@ -103,7 +104,8 @@ class MotorPreditivoContextSizeTests(unittest.IsolatedAsyncioTestCase):
         # matter.
         from app.agents import motor_preditivo
 
-        batches = [{"batch_id": i, "product_name": f"Produto {i}"} for i in range(20)]
+        batches = [{"batch_id": i, "product_name": f"Produto {i}", "snapshot_date": date(2026, 10, 14)}
+                   for i in range(20)]
         llm = _StubLlm()
 
         with (
@@ -116,7 +118,39 @@ class MotorPreditivoContextSizeTests(unittest.IsolatedAsyncioTestCase):
             await motor_preditivo.node_motor_preditivo({"empresa_id": 42})
 
         prompt_text = str(llm.last_messages[0].content)
-        self.assertEqual(read_json_block(prompt_text, "os mais urgentes primeiro):"), batches[:10])
+        expected = [{**row, "snapshot_date": "2026-10-14"} for row in batches[:10]]
+        self.assertEqual(read_json_block(prompt_text, "os mais urgentes primeiro):"), expected)
+
+
+class SnapshotValidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_invalid_publications_stop_before_notifications_or_forecast_or_model(self):
+        from app.agents import motor_preditivo as motor
+        from app.tools.analytics_tools import AnalyticsPublicationUnavailable
+
+        for source in ("get_sales_summary", "get_expiring_batches", "get_stock_alerts"):
+            for value in (None, "2026-10-14", "bad", 123, True, datetime(2026, 10, 14), date.min, date.max):
+                with self.subTest(source=source, value=value):
+                    rows = [{"product_id": 2, "product_name": "Milk", "snapshot_date": value}]
+                    with (
+                        patch.object(motor, "get_sales_summary", AsyncMock(return_value=[])),
+                        patch.object(motor, "get_expiring_batches", AsyncMock(return_value=[])),
+                        patch.object(motor, "get_stock_alerts", AsyncMock(return_value=[])),
+                        patch.object(motor, source, AsyncMock(return_value=rows)),
+                        patch.object(motor, "get_daily_sales_series", AsyncMock()) as daily,
+                        patch.object(motor, "notify_new_critical_alerts", AsyncMock()) as notify,
+                        patch.object(motor, "get_llm") as llm,
+                    ):
+                        with self.assertRaises(AnalyticsPublicationUnavailable):
+                            await motor.node_motor_preditivo({"empresa_id": 1})
+                    daily.assert_not_awaited()
+                    notify.assert_not_awaited()
+                    llm.assert_not_called()
+
+    def test_missing_snapshot_field_is_rejected(self):
+        from app.agents.motor_preditivo import _snapshot_date
+        from app.tools.analytics_tools import AnalyticsPublicationUnavailable
+        with self.assertRaises(AnalyticsPublicationUnavailable):
+            _snapshot_date({})
 
 
 if __name__ == "__main__":

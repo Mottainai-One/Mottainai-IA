@@ -55,6 +55,11 @@ def _op_error() -> OperationalError:
 
 
 class PostgresRetryTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        bootstrap = patch("app.tools.postgres_tools.initialize_pg_context", new=AsyncMock())
+        bootstrap.start()
+        self.addCleanup(bootstrap.stop)
+
     async def test_retries_on_operational_error_and_eventually_succeeds(self):
         session = FakeSession(query_side_effect=[_op_error(), _op_error(), FakeResult([(7,)])])
         with (

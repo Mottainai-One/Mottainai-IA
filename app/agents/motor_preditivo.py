@@ -29,6 +29,8 @@ Note: SYSTEM_PROMPT and the operational context block fed to the LLM are
 deliberately kept in Portuguese, same as the other agents.
 """
 
+from datetime import date, timedelta
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.context import NUMBER_GUIDANCE, model_context_json
@@ -37,6 +39,7 @@ from app.analytics.forecasting import build_daily_series, forecast_product_deman
 from app.notifications.alert_webhook import notify_new_critical_alerts
 from app.observability.tool_runs import timed_tool_call
 from app.rag.external_source import get_weather_forecast, interpret_weather_for_demand
+from app.tools.analytics_tools import AnalyticsPublicationUnavailable
 from app.tools.mcp_tools import mcp_call_weather_agent
 from app.tools.postgres_tools import (
     get_daily_sales_series,
@@ -49,20 +52,30 @@ SYSTEM_PROMPT = """Você é o Motor Preditivo do Mottainai — sistema autônomo
 
 Suas responsabilidades:
 1. PREVISÃO DE DEMANDA: Um cálculo de média móvel ponderada com tendência (feito em Python, não por você) já estima a demanda dos próximos 7 dias por produto. Sua função é EXPLICAR esses números — não recalculá-los nem inventar novos.
-2. DETECÇÃO DE RISCO DE PERDA: Identifique lotes com alto risco de vencimento cruzando validade × giro histórico. Priorize por severidade (dias restantes × quantidade).
+Não escolha loja de destino para transferência sem dados de demanda por loja; recomende apenas avaliar transferência após conferir giro e logística.
+2. DETECÇÃO DE RISCO DE PERDA: Identifique lotes com alto risco de vencimento cruzando validade × giro histórico. Priorize pela validade e quantidade, sem inventar fórmulas ou classificações.
 3. AÇÃO SUGERIDA: Para cada risco identificado, recomende: promoção relâmpago, transferência entre lojas, doação ou descarte. Justifique a escolha.
 4. PRÉ-LISTA DE ABASTECIMENTO: Com base na previsão de demanda calculada e no estoque atual, gere sugestão de reposição.
 
 Formato de saída: resumo executivo em português, com previsão, riscos, ações sugeridas e reposição.
-Use até 3500 caracteres, priorize até 5 produtos e 3 riscos; não repita os dados completos nem apresente JSON.
+Use até 2200 caracteres, priorize até 5 produtos e 3 riscos; não repita os dados completos nem apresente JSON.
 Organize em quatro seções curtas: Previsão, Riscos, Ações e Reposição. Conclua todas; evite introdução, tabelas repetidas e lista adicional de próximos passos.
 Não exponha identificadores internos ou tecnologias. Sugestões precisam de confirmação antes de execução.
-Se faltarem dados de estoque, não invente quantidades de reposição.
+A lista de lotes em risco não comprova o estoque total. Sem consulta completa de estoque, não afirme estoque remanescente zero nem calcule quantidade de reposição. Apresente a demanda prevista e recomende conferir o estoque utilizável antes de dimensionar a compra.
+Explique somente a demanda prevista para 7 dias; não extrapole para duas semanas ou outro horizonte. Não descreva fatores internos nem estime crescimento futuro, estabilidade, margens ou percentuais. Validade dos lotes não altera o horizonte da previsão. Não calcule severidade nem atribua rótulos alto/baixo sem regra explícita.
 Não atribua causas, percentuais de impacto climático ou maior giro de uma loja sem esses dados. Diferencie previsão zero de ausência de vendas em outros períodos.
 Em ações, não cite lojas de destino nem afirme estoque baixo ou demanda em outras filiais sem dados por loja. Sugira confirmar giro, disponibilidade e logística antes de transferir; baixo giro não comprova demanda maior.
 Use nomes dos produtos e lojas em vez de códigos de lote ou campos técnicos. Para cada risco, dê uma ação condicional com justificativa curta, sem repetir a lista numa tabela. Não estime quantidades ou percentuais extras.
 NUNCA invente dados. Use APENAS os dados fornecidos no contexto, incluindo a previsão de demanda já calculada.
 """
+
+
+def _snapshot_date(row: dict) -> date:
+    """Require the SQL DATE contract and enough range for the 28-day window."""
+    value = row.get("snapshot_date")
+    if type(value) is not date or not date.min + timedelta(days=27) <= value < date.max:
+        raise AnalyticsPublicationUnavailable("Missing or invalid analytical snapshot_date")
+    return value
 
 
 async def node_motor_preditivo(state: MottainaiState) -> MottainaiState:
@@ -94,6 +107,10 @@ async def node_motor_preditivo(state: MottainaiState) -> MottainaiState:
         input={"empresa_id": empresa_id, "store_id": store_id},
     )
 
+    # Validate before any date arithmetic, notifications or model invocation.
+    publication_dates = [_snapshot_date(row) for row in [*sales, *expiring, *alerts]]
+    publication_date = publication_dates[0] if publication_dates else None
+
     # 1b. Pushes a webhook for any CRITICAL alert not already notified —
     # see app/notifications/alert_webhook.py. Best-effort: never raises,
     # a notification failure must not break the analysis below.
@@ -111,8 +128,15 @@ async def node_motor_preditivo(state: MottainaiState) -> MottainaiState:
             input={"empresa_id": empresa_id, "product_ids": product_ids, "days_back": 28, "store_id": store_id},
         )
         for product in top_products:
-            series = build_daily_series(daily_rows, product["product_id"], days_back=28)
+            snapshot_date = _snapshot_date(product)
+            series = build_daily_series(
+                daily_rows, product["product_id"], days_back=28,
+                reference_date=snapshot_date + timedelta(days=1),
+            )
             forecast = forecast_product_demand(series)
+            # The trend adjustment is already included in the computed demand.
+            # Do not ask the model to reinterpret the capped internal factor.
+            forecast.pop("trend_pct", None)
             demand_forecast.append({
                 "product_id": product["product_id"],
                 "product_name": product["product_name"],
@@ -164,6 +188,8 @@ ALERTAS ATIVOS:
     llm = get_llm(temperature=0.1, max_tokens=1800)  # low temperature for technical analysis
     response = await llm.ainvoke(messages)
     content = response.content
+    if publication_date:
+        content = f"Dados publicados em {publication_date:%d/%m/%Y}.\n\n{content}"
 
     usage = getattr(response, "usage_metadata", None) or {}
 
@@ -172,7 +198,7 @@ ALERTAS ATIVOS:
         "agent_response": content,
         "grounding_context": context,
         "sources": [
-            {"type": "sql", "ref": "mottainai.batch + sales_transaction + alert", "score": None},
+            {"type": "sql", "ref": "mottainai_analytics.fact_inventory_snapshot + fact_sales + fact_sale_item + fact_alert_snapshot", "score": None},
             {"type": "other", "ref": "app.analytics.forecasting (média móvel ponderada com tendência)", "score": None},
             {"type": "api", "ref": "Open-Meteo (open-meteo.com) — CC BY 4.0", "score": None},
         ],

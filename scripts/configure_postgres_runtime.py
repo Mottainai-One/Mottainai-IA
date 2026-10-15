@@ -43,9 +43,7 @@ async def main() -> None:
                     f"NOCREATEDB NOCREATEROLE PASSWORD '{quoted_password}'"
                 ))
             await connection.execute(text(f"ALTER ROLE {role_name} SET search_path = mottainai, public"))
-            await connection.execute(text(f"GRANT mottainai_app TO {role_name}"))
-            for table in ("company", "retail_store", "employee", "inventory", "sales_transaction", "purchase_order"):
-                await connection.execute(text(f"ALTER TABLE mottainai.{table} FORCE ROW LEVEL SECURITY"))
+            await connection.execute(text(f"GRANT mottainai_api TO {role_name}"))
     finally:
         await engine.dispose()
 

@@ -16,7 +16,9 @@ Tokens minted without a "jti" (e.g. by an older client, or an external
 issuer that hasn't adopted the claim yet) still decode successfully — they
 just can't be individually revoked.
 """
+import hashlib
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Annotated
@@ -43,6 +45,7 @@ class AuthContext:
     role: str
     jti: str | None = None
     exp: int | None = None
+    operational_identity: str | None = None
 
 
 def _invalid_token() -> HTTPException:
@@ -100,6 +103,29 @@ async def revoke_token(jti: str, exp: int) -> None:
 
 async def decode_access_token(token: str) -> AuthContext:
     settings = get_settings()
+    try:
+        algorithm = jwt.get_unverified_header(token).get("alg")
+    except jwt.PyJWTError as exc:
+        raise _invalid_token() from exc
+    if algorithm == "RS256":
+        from app.database.identity import resolve_firebase_identity
+        from app.security.firebase_auth import (
+            FirebaseVerificationUnavailable,
+            verify_firebase_id_token,
+        )
+
+        try:
+            firebase = await verify_firebase_id_token(token)
+        except jwt.PyJWTError as exc:
+            raise _invalid_token() from exc
+        except FirebaseVerificationUnavailable as exc:
+            raise HTTPException(status_code=503, detail="Não foi possível validar sua sessão. Tente novamente.") from exc
+        jti = "firebase-" + hashlib.sha256(token.encode()).hexdigest()
+        if await _is_revoked(jti):
+            raise _invalid_token()
+        identity = await resolve_firebase_identity(firebase.uid, firebase.email)
+        return AuthContext(identity.user_id, identity.company_id, identity.role,
+                           jti, firebase.expires_at, identity.login_identity)
     if not is_configured_jwt_secret(settings.jwt_secret):
         raise _invalid_token()
 
@@ -120,6 +146,12 @@ async def decode_access_token(token: str) -> AuthContext:
             raise ValueError
         jti = claims.get("jti")
         exp = claims.get("exp")
+        operational_identity = claims.get("operational_identity")
+        if operational_identity is not None and (
+            not isinstance(operational_identity, str)
+            or re.fullmatch(r"EMAIL_SHA256_[A-Fa-f0-9]{64}", operational_identity) is None
+        ):
+            raise ValueError
         if jti and await _is_revoked(str(jti)):
             raise ValueError
         return AuthContext(
@@ -128,6 +160,7 @@ async def decode_access_token(token: str) -> AuthContext:
             role=role,
             jti=str(jti) if jti else None,
             exp=_positive_int(exp) if exp else None,
+            operational_identity=operational_identity,
         )
     except (jwt.PyJWTError, KeyError, TypeError, ValueError) as exc:
         raise _invalid_token() from exc
@@ -138,7 +171,14 @@ async def require_auth(
 ) -> AuthContext:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise _invalid_token()
-    return await decode_access_token(credentials.credentials)
+    principal = await decode_access_token(credentials.credentials)
+    from app.database.identity import OperationalIdentity, current_identity
+    current_identity.set(
+        OperationalIdentity(principal.usuario_id, principal.empresa_id,
+                            principal.role, principal.operational_identity)
+        if principal.operational_identity and principal.role != "CLIENTE" else None
+    )
+    return principal
 
 
 def require_roles(*roles: str):
@@ -147,6 +187,21 @@ def require_roles(*roles: str):
     async def dependency(principal: Annotated[AuthContext, Depends(require_auth)]) -> AuthContext:
         if principal.role not in allowed:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permission.")
+        return principal
+
+    return dependency
+
+
+def require_operational_roles(*roles: str):
+    """Revalidate the database account before any write or cached replay."""
+    role_dependency = require_roles(*roles)
+
+    async def dependency(principal: Annotated[AuthContext, Depends(role_dependency)]) -> AuthContext:
+        from app.database.identity import initialize_pg_context
+        from app.database.postgres import get_pg_session
+
+        async with get_pg_session() as session:
+            await initialize_pg_context(session, principal.empresa_id)
         return principal
 
     return dependency
