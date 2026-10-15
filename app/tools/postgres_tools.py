@@ -205,7 +205,7 @@ async def _find_inventory(
     return row
 
 
-class DisposalCeilingExceeded(Exception):
+class DisposalCeilingExceeded(PermissionError):
     """A single disposal would remove more than settings.disposal_ceiling_percent
     of the batch's current quantity, and the acting role isn't authorized
     to do that alone (only GERENTE/DONO are)."""

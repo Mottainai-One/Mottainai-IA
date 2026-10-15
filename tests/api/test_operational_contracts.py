@@ -41,6 +41,7 @@ from interfaces.api.main import (
     unhandled_exception_handler,
     upload_rag_document,
 )
+from tests.test_idempotency import FakeRedis as FakeIdempotencyRedis
 
 
 class SettingsContractTests(unittest.TestCase):
@@ -228,22 +229,64 @@ class RagDocumentDeleteRouteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(context.exception.status_code, 404)
 
-
-class FakeIdempotencyRedis:
-    """In-memory stand-in for app.database.redis_client.get_redis(), just
-    the two calls app/cache/idempotency.py makes."""
-
-    def __init__(self):
-        self.store: dict[str, str] = {}
-
-    async def get(self, key):
-        return self.store.get(key)
-
-    async def set(self, key, value, ex=None):
-        self.store[key] = value
-
-
 class EmployeeWriteRoutesTests(unittest.IsolatedAsyncioTestCase):
+    async def test_validation_failure_releases_key_before_http_translation(self):
+        tool = AsyncMock(side_effect=[ValueError("not found"), {"new_inventory_balance": Decimal("50")}])
+        body = ReceberMercadoriaRequest(store_id=1, batch_id=7, quantity=Decimal("20"))
+        principal = AuthContext(usuario_id=9, empresa_id=42, role="GERENTE")
+        with (
+            patch("app.tools.postgres_tools.receive_inventory", tool),
+            patch("app.cache.idempotency.get_redis", return_value=FakeIdempotencyRedis()),
+        ):
+            with self.assertRaises(HTTPException) as error:
+                await receber_mercadoria(body, principal, "retry-after-rollback")
+            self.assertEqual(error.exception.status_code, 404)
+            result = await receber_mercadoria(body, principal, "retry-after-rollback")
+        self.assertEqual(result["new_inventory_balance"], Decimal("50"))
+        self.assertEqual(tool.await_count, 2)
+
+    async def test_concurrent_http_write_returns_409_and_replays_completed_result(self):
+        entered, finish = asyncio.Event(), asyncio.Event()
+
+        async def write(**kwargs):
+            entered.set()
+            await finish.wait()
+            return {"new_inventory_balance": Decimal("50")}
+
+        principal = AuthContext(usuario_id=9, empresa_id=42, role="GERENTE")
+        route = next(r for r in app.routes if getattr(r, "path", None) == "/funcionario/receber-mercadoria")
+        dependency = route.dependant.dependencies[0].call
+        prior = app.dependency_overrides.get(dependency)
+        app.dependency_overrides[dependency] = lambda: principal
+        try:
+            with (
+                patch("app.tools.postgres_tools.receive_inventory", AsyncMock(side_effect=write)) as tool,
+                patch("app.cache.idempotency.get_redis", return_value=FakeIdempotencyRedis()),
+            ):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                    async def send():
+                        return await client.post("/funcionario/receber-mercadoria",
+                            headers={"Idempotency-Key": "parallel-http"},
+                            json={"store_id": 1, "batch_id": 7, "quantity": "20"})
+                    first = asyncio.create_task(send())
+                    try:
+                        await asyncio.wait_for(entered.wait(), 3)
+                        conflict = await send()
+                        self.assertEqual(conflict.status_code, 409, conflict.text)
+                        self.assertNotIn("parallel-http", conflict.text)
+                    finally:
+                        finish.set()
+                        completed = await first
+                    replay = await send()
+                self.assertEqual(completed.status_code, 200, completed.text)
+                self.assertEqual(completed.json(), replay.json())
+                tool.assert_awaited_once()
+        finally:
+            if prior is None:
+                app.dependency_overrides.pop(dependency, None)
+            else:
+                app.dependency_overrides[dependency] = prior
+
     async def test_descartar_lote_calls_the_tool_with_the_authenticated_employee(self):
         tool = AsyncMock(return_value={"disposal_id": 1, "new_inventory_balance": Decimal("2")})
         body = DescartarLoteRequest(store_id=1, batch_id=7, quantity=Decimal("3"), reason="vencido")

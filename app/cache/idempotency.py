@@ -7,15 +7,11 @@ Redis calls below, same as app/cache/rate_limit.check_rate_limit (no
 try/except either, called directly from guardrail_entrada). A duplicated
 disposal/receipt is worse than a rejected request during a Redis outage.
 
-Only covers the real bug (a client retrying after a lost response, so the
-retry arrives once the first attempt has already finished and stored its
-result): this is a plain GET-before-run, not a distributed lock. Two
-requests with the same key arriving genuinely concurrently — both past
-the GET before either has stored a result — can still both run `fn`. A
-full lock (SET NX as a mutex around the call, not just the cached
-result) would close that too, but nothing in the reported bug requires
-it, and it would make failure handling (crash while holding the lock)
-part of this change's surface for a scenario it isn't fixing.
+An ownership-token Redis lock serializes each key across workers. It has no
+automatic expiry: a slow or interrupted database write must never be overtaken
+by a second writer. An ambiguous failure retains the lock for reconciliation;
+see docs/OFFICIAL_DATABASE_VALIDATION.md. Redis loss/eviction and PostgreSQL
+commit ambiguity still prevent a durable exactly-once guarantee.
 """
 import hashlib
 import json
@@ -33,6 +29,10 @@ class InvalidIdempotencyKey(ValueError):
     """The Idempotency-Key header's value doesn't meet the shape rule
     below — a client input error (400), distinguishable at the route
     layer from any other ValueError `fn` itself might raise."""
+
+
+class IdempotencyInProgress(RuntimeError):
+    """The key is executing or requires reconciliation after interruption."""
 
 
 class _DecimalPreservingEncoder(json.JSONEncoder):
@@ -67,11 +67,12 @@ def validate_idempotency_key(key: str) -> str:
 
 
 async def run_idempotent(empresa_id: int, key: str, fn: Callable[[], Awaitable[T]]) -> T:
-    """Runs `fn` at most once for a given (empresa_id, key): a repeated
-    call with the same key returns the first call's stored result
-    without running `fn` again. Only successful calls are cached — if
-    `fn` raises, nothing is stored, so a corrected retry under the same
-    key can still succeed."""
+    """Replay successful results; reject overlapping/uncertain executions.
+
+    Callbacks must roll back before raising validation/authorization errors.
+    Other errors, cancellation and failed result storage retain the lock.
+    Completed results retain the configured TTL, not an infinite guarantee.
+    """
     validate_idempotency_key(key)
     settings = get_settings()
     redis = get_redis()
@@ -81,12 +82,32 @@ async def run_idempotent(empresa_id: int, key: str, fn: Callable[[], Awaitable[T
     if cached is not None:
         return json.loads(cached, object_hook=_decimal_object_hook)
 
-    result = await fn()
+    lock = redis.lock(f"{cache_key}:lock", timeout=None, blocking=False, thread_local=False)
+    if not await lock.acquire():
+        # Completion may have raced with the failed acquisition.
+        cached = await redis.get(cache_key)
+        if cached is not None:
+            return json.loads(cached, object_hook=_decimal_object_hook)
+        raise IdempotencyInProgress("Write is in progress or awaiting reconciliation")
+
+    # Another worker may have completed between the initial GET and acquisition.
+    cached = await redis.get(cache_key)
+    if cached is not None:
+        await lock.release()
+        return json.loads(cached, object_hook=_decimal_object_hook)
+    try:
+        result = await fn()
+    except (ValueError, PermissionError):
+        await lock.release()
+        raise
+    # Deliberately no finally-release: after an uncertain commit or cache failure,
+    # retrying the write automatically could apply the inventory movement twice.
     await redis.set(
         cache_key,
         json.dumps(result, cls=_DecimalPreservingEncoder),
         ex=settings.idempotency_ttl_seconds,
     )
+    await lock.release()
     return result
 
 

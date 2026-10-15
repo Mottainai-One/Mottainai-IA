@@ -29,7 +29,7 @@ Note: SYSTEM_PROMPT and the operational context block fed to the LLM are
 deliberately kept in Portuguese, same as the other agents.
 """
 
-from datetime import timedelta
+from datetime import date, timedelta
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -39,6 +39,7 @@ from app.analytics.forecasting import build_daily_series, forecast_product_deman
 from app.notifications.alert_webhook import notify_new_critical_alerts
 from app.observability.tool_runs import timed_tool_call
 from app.rag.external_source import get_weather_forecast, interpret_weather_for_demand
+from app.tools.analytics_tools import AnalyticsPublicationUnavailable
 from app.tools.mcp_tools import mcp_call_weather_agent
 from app.tools.postgres_tools import (
     get_daily_sales_series,
@@ -67,6 +68,14 @@ Em ações, não cite lojas de destino nem afirme estoque baixo ou demanda em ou
 Use nomes dos produtos e lojas em vez de códigos de lote ou campos técnicos. Para cada risco, dê uma ação condicional com justificativa curta, sem repetir a lista numa tabela. Não estime quantidades ou percentuais extras.
 NUNCA invente dados. Use APENAS os dados fornecidos no contexto, incluindo a previsão de demanda já calculada.
 """
+
+
+def _snapshot_date(row: dict) -> date:
+    """Require the SQL DATE contract and enough range for the 28-day window."""
+    value = row.get("snapshot_date")
+    if type(value) is not date or not date.min + timedelta(days=27) <= value < date.max:
+        raise AnalyticsPublicationUnavailable("Missing or invalid analytical snapshot_date")
+    return value
 
 
 async def node_motor_preditivo(state: MottainaiState) -> MottainaiState:
@@ -98,6 +107,10 @@ async def node_motor_preditivo(state: MottainaiState) -> MottainaiState:
         input={"empresa_id": empresa_id, "store_id": store_id},
     )
 
+    # Validate before any date arithmetic, notifications or model invocation.
+    publication_dates = [_snapshot_date(row) for row in [*sales, *expiring, *alerts]]
+    publication_date = publication_dates[0] if publication_dates else None
+
     # 1b. Pushes a webhook for any CRITICAL alert not already notified —
     # see app/notifications/alert_webhook.py. Best-effort: never raises,
     # a notification failure must not break the analysis below.
@@ -115,10 +128,10 @@ async def node_motor_preditivo(state: MottainaiState) -> MottainaiState:
             input={"empresa_id": empresa_id, "product_ids": product_ids, "days_back": 28, "store_id": store_id},
         )
         for product in top_products:
-            snapshot_date = product.get("snapshot_date")
+            snapshot_date = _snapshot_date(product)
             series = build_daily_series(
                 daily_rows, product["product_id"], days_back=28,
-                reference_date=snapshot_date + timedelta(days=1) if snapshot_date else None,
+                reference_date=snapshot_date + timedelta(days=1),
             )
             forecast = forecast_product_demand(series)
             # The trend adjustment is already included in the computed demand.
@@ -175,8 +188,6 @@ ALERTAS ATIVOS:
     llm = get_llm(temperature=0.1, max_tokens=1800)  # low temperature for technical analysis
     response = await llm.ainvoke(messages)
     content = response.content
-    publication_date = next((row.get("snapshot_date") for row in [*sales, *expiring, *alerts]
-                             if row.get("snapshot_date")), None)
     if publication_date:
         content = f"Dados publicados em {publication_date:%d/%m/%Y}.\n\n{content}"
 

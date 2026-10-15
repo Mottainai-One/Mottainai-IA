@@ -50,7 +50,12 @@ from redis.exceptions import RedisError
 from app.agents.governanca import run_auditoria_execucoes, run_relatorio_conformidade
 from app.agents.runtime import get_llm_model_label
 from app.agents.supervisor import MottainaiState, mottainai_graph, node_guardrail_saida
-from app.cache.idempotency import InvalidIdempotencyKey, run_idempotent, scoped_write_key
+from app.cache.idempotency import (
+    IdempotencyInProgress,
+    InvalidIdempotencyKey,
+    run_idempotent,
+    scoped_write_key,
+)
 from app.cache.rate_limit import check_endpoint_rate_limit
 from app.database.mongo import get_mongo_db
 from app.database.operational_schema import OPERATIONAL_SCHEMA_READY_QUERY
@@ -342,6 +347,14 @@ def _validate_uploaded_image(image_bytes: bytes, declared_content_type: str | No
     if normalized_declared != actual_content_type:
         raise ValueError("O conteúdo da imagem não corresponde ao tipo informado.")
     return actual_content_type
+
+
+@app.exception_handler(IdempotencyInProgress)
+async def idempotency_in_progress_handler(request: Request, exc: IdempotencyInProgress) -> JSONResponse:
+    return JSONResponse(status_code=409, content={
+        "detail": "Esta operação está em processamento ou aguardando conferência. "
+                  "Consulte seu resultado antes de tentar novamente e mantenha a mesma chave de operação.",
+    })
 
 
 @app.exception_handler(AnalyticsPublicationUnavailable)
@@ -801,27 +814,26 @@ async def descartar_lote(
     from app.tools.postgres_tools import DisposalCeilingExceeded, discard_batch
 
     async def _discard() -> dict:
-        try:
-            return await discard_batch(
-                empresa_id=principal.empresa_id,
-                store_id=body.store_id,
-                batch_id=body.batch_id,
-                user_id=principal.usuario_id,
-                quantity=body.quantity,
-                reason=body.reason,
-                role=principal.role,
-                observation=body.observation,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-        except DisposalCeilingExceeded as exc:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        return await discard_batch(
+            empresa_id=principal.empresa_id,
+            store_id=body.store_id,
+            batch_id=body.batch_id,
+            user_id=principal.usuario_id,
+            quantity=body.quantity,
+            reason=body.reason,
+            role=principal.role,
+            observation=body.observation,
+        )
 
     try:
         return await run_idempotent(principal.empresa_id, scoped_write_key(
             principal.usuario_id, "discard_batch", idempotency_key), _discard)
     except InvalidIdempotencyKey as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except DisposalCeilingExceeded as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
 
 @app.post("/funcionario/receber-mercadoria", tags=["Funcionário"])
@@ -841,23 +853,22 @@ async def receber_mercadoria(
     from app.tools.postgres_tools import receive_inventory
 
     async def _receive() -> dict:
-        try:
-            return await receive_inventory(
-                empresa_id=principal.empresa_id,
-                store_id=body.store_id,
-                batch_id=body.batch_id,
-                user_id=principal.usuario_id,
-                quantity=body.quantity,
-                observation=body.observation,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        return await receive_inventory(
+            empresa_id=principal.empresa_id,
+            store_id=body.store_id,
+            batch_id=body.batch_id,
+            user_id=principal.usuario_id,
+            quantity=body.quantity,
+            observation=body.observation,
+        )
 
     try:
         return await run_idempotent(principal.empresa_id, scoped_write_key(
             principal.usuario_id, "receive_inventory", idempotency_key), _receive)
     except InvalidIdempotencyKey as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @app.get("/metrics/summary", tags=["Métricas"])
