@@ -1,5 +1,6 @@
 .git
 .github
+.run/
 .env
 .env.*
 !.env.example
@@ -10,6 +11,7 @@ __pycache__/
 venv/
 *.pyc
 *.pyo
+*.pyd
 *.log
 coverage.xml
 .coverage
