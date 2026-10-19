@@ -17,6 +17,9 @@ RUN pip install --only-binary=:all: --requirement requirements.txt
 COPY --chown=appuser:appuser . .
 USER appuser
 
+# Runtime deliberately loads embeddings offline; cache the model in the image.
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+
 EXPOSE 8000
 
 CMD ["python", "-m", "uvicorn", "interfaces.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
