@@ -23,6 +23,7 @@ o Supervisor roteia por perfil e intenção, o Juiz audita a resposta e os guard
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-asyncpg-336791?style=flat&logo=postgresql&logoColor=white)
 ![MongoDB](https://img.shields.io/badge/MongoDB-motor-47A248?style=flat&logo=mongodb&logoColor=white)
 ![Redis](https://img.shields.io/badge/Redis-redis--py-FF4438?style=flat&logo=redis&logoColor=white)
+![Neo4j](https://img.shields.io/badge/Neo4j-optional%20RAG%20graph-008CC1?style=flat&logo=neo4j&logoColor=white)
 ![Groq](https://img.shields.io/badge/LLM-Groq%20%2F%20Ollama-F55036?style=flat)
 
 </div>
@@ -64,6 +65,7 @@ O Juiz é configurado em modo fail-closed: se a resposta não for adequada, ela 
 - **Motor preditivo** — gera recomendações com base em histórico de vendas e clima, antecipando compra, risco de perda e ações de reposição.
 - **Análise de prateleira** — aceita imagens de prateleira para análise visual com Gemini: ocupação, produtos detectados, vazio visual e sugestões de ação.
 - **Base de conhecimento (RAG)** — responde clientes com documentos da própria empresa; gerentes e donos podem subir novos documentos via API.
+- **Grafo de citações RAG (opcional)** — projeta conversas, respostas e fontes MongoDB no Neo4j para consultas por traversal; não participa do caminho do chat. Veja [NEO4J_RAG_GRAPH.md](docs/NEO4J_RAG_GRAPH.md).
 - **Governança e auditoria** — registra métricas, latências, execução por agente e relatórios de conformidade.
 
 ## Arquitetura
@@ -124,12 +126,13 @@ Diagrama completo, com todos os agentes lado a lado, em [ARQUITETURA.md](ARQUITE
 | Dados operacionais | [PostgreSQL](https://www.postgresql.org/) via [asyncpg](https://github.com/MagicStack/asyncpg) + [SQLAlchemy async](https://www.sqlalchemy.org/) | 0.30 / 2.0 | Fonte operacional: Mottainai-Banco-Operacional develop |
 | Dados de IA | [MongoDB](https://www.mongodb.com/) via [Motor](https://motor.readthedocs.io/) | 3.7 | Histórico, memória de longo prazo, RAG e auditoria |
 | Cache e rate limit | [Redis](https://redis.io/) via [redis-py async](https://github.com/redis/redis-py) | 5.2 | Rate limit, cache de RAG e notificações |
+| Grafo opcional | [Neo4j](https://neo4j.com/) via [Python Driver](https://neo4j.com/docs/python-manual/current/) | 6.4 | Projeção acadêmica para traversal das citações RAG, fora do runtime do chat |
 | Clima | [Open-Meteo](https://open-meteo.com/) | — | Previsão do tempo para o Motor Preditivo (sem API key) |
 | Autenticação | [PyJWT](https://pyjwt.readthedocs.io/) (HS256) | 2.10 | Tokens com `empresa_id`, `usuario_id` e `role` |
 | Interoperabilidade | [MCP](https://modelcontextprotocol.io/) + [A2A](https://a2a-protocol.org/) | — | Exposição do Mottainai como serviço para outros agentes |
 | Resiliência | [tenacity](https://tenacity.readthedocs.io/) + [httpx](https://www.python-httpx.org/) | 9.0 / 0.28 | Retry com backoff exponencial e HTTP assíncrono |
 | Observabilidade | [structlog](https://www.structlog.org/) | 24.4 | Logs estruturados |
-| Infra local | [Docker Compose](https://docs.docker.com/compose/) | — | Provisionamento de PostgreSQL e MongoDB |
+| Infra local | [Docker Compose](https://docs.docker.com/compose/) | — | Provisionamento de PostgreSQL, MongoDB e Neo4j opcional; Redis externo |
 | Qualidade | [Ruff](https://docs.astral.sh/ruff/) + [Coverage](https://coverage.readthedocs.io/) | 0.16 / 7.6 | Lint e cobertura mínima de 60% na CI |
 
 ## Estrutura do Projeto
@@ -163,6 +166,7 @@ mottainai-ia/
 │   ├── windows/               # Bootstrap para Windows
 │   ├── generate_dev_token.py  # Token JWT de desenvolvimento
 │   ├── generate_embeddings.py # Embeddings dos chunks RAG
+│   ├── sync_neo4j_rag.py      # Projeta citações MongoDB no Neo4j por empresa
 │   ├── preflight_postgres.py  # Validação read-only do schema
 │   ├── setup_mongo.py         # Cria/atualiza collections e índices
 │   └── validate_ai.py         # Validação de prompts e respostas (usado na CI)
@@ -174,6 +178,8 @@ mottainai-ia/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── docker-compose.windows.yml
+├── docker-compose.neo4j.yml  # Neo4j opcional para o grafo de citações RAG
+├── docs/NEO4J_RAG_GRAPH.md   # Modelo, execução e pergunta de negócio em Cypher
 ├── pyproject.toml
 ├── requirements.txt
 ├── start.sh
@@ -297,6 +303,17 @@ python scripts/generate_embeddings.py
 ```
 
 > A estrutura pertence exclusivamente ao repositório [Mottainai-Banco-Operacional](https://github.com/Mottainai-One/Mottainai-Banco-Operacional/tree/develop/database/operational). A IA não cria, remove nem altera tabelas. Os antigos instaladores/cargas v6 estão desativados; `scripts/sql/operational-source.json` registra a versão do contrato. MongoDB continua responsável por conversas/RAG e Redis por cache.
+
+### Grafo Neo4j opcional para a atividade de banco de dados
+
+O grafo usa metadados de conversas e citações RAG já persistidas no MongoDB. Redis continua apenas como cache, e nenhum endpoint das APIs MongoDB/Redis é alterado. Configure `NEO4J_PASSWORD` no `.env`, inicie o serviço e importe uma empresa:
+
+```bash
+docker compose --env-file .env -f docker-compose.neo4j.yml up -d
+python scripts/sync_neo4j_rag.py --empresa-id 1
+```
+
+O importador substitui apenas a projeção da empresa selecionada e não copia o conteúdo das mensagens, textos dos trechos, IDs de usuários ou embeddings. A consulta de negócio que percorre Empresa → Conversa → Resposta FAQ → Trecho RAG → Documento está em [docs/NEO4J_RAG_GRAPH.md](docs/NEO4J_RAG_GRAPH.md).
 
 O **operacional** valida identidade/permissões e executa recebimentos/descartes confirmados. O **analítico** atende todas as consultas de negócio do mobile/IA em transações somente leitura, com filtro de empresa e das lojas autorizadas. São conexões separadas: não há fallback de leitura para o operacional. As respostas usam a data da publicação bem-sucedida em `vw_published_batch`; ausência de carga retorna indisponibilidade. A IA não executa o ETL nem atualiza o analítico.
 
