@@ -42,6 +42,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("MONGO_URI", "MONGO_URL"),
     )
     mongo_db: str = "mottainai"
+    # Optional Neo4j projection used by scripts/sync_neo4j_rag.py. It is not
+    # part of the chatbot request path.
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = ""
+    neo4j_database: str = "neo4j"
     redis_url: str = "redis://localhost:6379/0"
     redis_password: str = ""
     redis_max_connections: int = 20
