@@ -226,6 +226,7 @@ async def _node_agente_funcionario_native(state: MottainaiState) -> MottainaiSta
     tools = build_toolkit(
         ["get_stock_alerts", "get_inventory_status", "get_expiring_batches", "retrieve_with_sources"],
         empresa_id=empresa_id, tool_runs=tool_runs, sources_acc=sources,
+        authenticated_store_id=state.get("store_id"),
     )
 
     mem_context = format_memory_for_prompt(state["memory"])

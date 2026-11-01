@@ -80,6 +80,7 @@ class Settings(BaseSettings):
 
     # JWT authentication (HS256; secret required outside of the code)
     jwt_secret: str = ""
+    jwt_secret_base64: bool = False
     jwt_algorithm: str = "HS256"
     firebase_auth_enabled: bool = False
     firebase_project_id: str = ""
@@ -88,6 +89,7 @@ class Settings(BaseSettings):
     jwt_expiration_minutes: int = 60
     jwt_issuer: str = ""
     jwt_audience: str = ""
+    firebase_project_id: str = ""
 
     # Configurable reference cost. On the Groq free tier, keep both at 0.
     llm_input_cost_per_million_usd: float = 0.0

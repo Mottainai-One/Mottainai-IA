@@ -9,11 +9,20 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import Runnable
 
 from app.agents.runtime import run_agent_with_tools
-from app.agents.tools_bridge import build_toolkit
+from app.agents.tools_bridge import _store_filter, build_toolkit
 
 
 def _tool_call(name, args, call_id="call-1"):
     return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
+
+
+class AuthenticatedStoreScopeTests(unittest.TestCase):
+    def test_employee_tool_call_cannot_change_authenticated_store(self):
+        self.assertEqual(_store_filter(999, 12), 12)
+
+    def test_owner_can_select_a_store_or_company_wide(self):
+        self.assertEqual(_store_filter(999, None), 999)
+        self.assertIsNone(_store_filter(None, None))
 
 
 class FakeChatModel(Runnable):

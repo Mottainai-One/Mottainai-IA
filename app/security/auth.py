@@ -16,6 +16,8 @@ Tokens minted without a "jti" (e.g. by an older client, or an external
 issuer that hasn't adopted the claim yet) still decode successfully — they
 just can't be individually revoked.
 """
+import base64
+import binascii
 import hashlib
 import logging
 import re
@@ -46,6 +48,7 @@ class AuthContext:
     jti: str | None = None
     exp: int | None = None
     operational_identity: str | None = None
+    store_id: int | None = None
 
 
 def _invalid_token() -> HTTPException:
@@ -72,6 +75,19 @@ def is_configured_jwt_secret(secret: object) -> bool:
 def is_configured_shared_secret(secret: object) -> bool:
     """Validates integration secrets using the same rules as the JWT secret."""
     return is_configured_jwt_secret(secret)
+
+
+def jwt_verification_key(settings: object) -> str | bytes:
+    """Decode Base64 secrets exactly as the SQL API's JWT signer does."""
+    secret = getattr(settings, "jwt_secret", "")
+    if not is_configured_jwt_secret(secret):
+        raise ValueError("JWT_SECRET is missing, weak or a placeholder")
+    if getattr(settings, "jwt_secret_base64", False):
+        key = base64.b64decode(secret, validate=True)
+        if len(key) < 32:
+            raise ValueError("Base64 JWT_SECRET must decode to at least 32 bytes")
+        return key
+    return secret
 
 
 async def _is_revoked(jti: str) -> bool:
@@ -136,7 +152,8 @@ async def decode_access_token(token: str) -> AuthContext:
             )
         identity = await resolve_firebase_identity(firebase.uid)
         return AuthContext(identity.user_id, identity.company_id, identity.role,
-                           jti, firebase.expires_at, identity.login_identity)
+                           jti, firebase.expires_at, identity.login_identity,
+                           identity.store_id)
     if not is_configured_jwt_secret(settings.jwt_secret):
         raise _invalid_token()
 
@@ -151,9 +168,12 @@ async def decode_access_token(token: str) -> AuthContext:
             decode_options["issuer"] = issuer
         if audience:
             decode_options["audience"] = audience
-        claims = jwt.decode(token, settings.jwt_secret, **decode_options)
+        signing_key = jwt_verification_key(settings)
+        claims = jwt.decode(token, signing_key, **decode_options)
         role = str(claims["role"]).upper()
         if role not in _ALLOWED_ROLES:
+            raise ValueError
+        if claims.get("use") not in (None, "access"):
             raise ValueError
         jti = claims.get("jti")
         exp = claims.get("exp")
@@ -165,15 +185,38 @@ async def decode_access_token(token: str) -> AuthContext:
             raise ValueError
         if jti and await _is_revoked(str(jti)):
             raise ValueError
+        if "usuario_id" in claims:
+            firebase_uid = claims["sub"]
+            if not isinstance(firebase_uid, str) or not firebase_uid.strip():
+                raise ValueError
+            from app.database.identity import resolve_firebase_identity
+
+            identity = await resolve_firebase_identity(firebase_uid)
+            user_id = _positive_int(claims["usuario_id"])
+            company_id = _positive_int(claims["empresa_id"])
+            claimed_store = _positive_int(claims["store_id"]) if claims.get("store_id") is not None else None
+            if (identity.user_id != user_id or identity.company_id != company_id
+                    or identity.role != role
+                    or (claimed_store is not None and identity.store_id != claimed_store)):
+                raise ValueError
+            operational_identity = identity.login_identity
+            store_id = identity.store_id
+        else:
+            user_id = _positive_int(claims["sub"])
+            company_id = _positive_int(claims["empresa_id"])
+            store_id = _positive_int(claims["store_id"]) if claims.get("store_id") is not None else None
+            if role in {"ESTOQUISTA", "GERENTE"} and store_id is None:
+                raise ValueError
         return AuthContext(
-            usuario_id=_positive_int(claims["sub"]),
-            empresa_id=_positive_int(claims["empresa_id"]),
+            usuario_id=user_id,
+            empresa_id=company_id,
             role=role,
             jti=str(jti) if jti else None,
             exp=_positive_int(exp) if exp else None,
             operational_identity=operational_identity,
+            store_id=store_id,
         )
-    except (jwt.PyJWTError, KeyError, TypeError, ValueError) as exc:
+    except (jwt.PyJWTError, binascii.Error, KeyError, TypeError, ValueError, PermissionError) as exc:
         raise _invalid_token() from exc
 
 
@@ -186,7 +229,7 @@ async def require_auth(
     from app.database.identity import OperationalIdentity, current_identity
     current_identity.set(
         OperationalIdentity(principal.usuario_id, principal.empresa_id,
-                            principal.role, principal.operational_identity)
+                            principal.role, principal.operational_identity, principal.store_id)
         if principal.operational_identity and principal.role != "CLIENTE" else None
     )
     return principal

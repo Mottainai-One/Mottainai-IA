@@ -12,6 +12,7 @@ class OperationalIdentity:
     company_id: int
     role: str
     login_identity: str
+    store_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -79,7 +80,8 @@ async def initialize_pg_context(session, company_id: int) -> dict:
     actor = result.mappings().first()
     if (actor is None or actor["user_id"] != identity.user_id
             or actor["company_id"] != company_id
-            or DATABASE_ROLES.get(actor["database_role"]) != identity.role):
+            or DATABASE_ROLES.get(actor["database_role"]) != identity.role
+            or (identity.store_id is not None and actor["store_id"] != identity.store_id)):
         raise PermissionError("Operational identity or permissions have changed")
     return dict(actor)
 
@@ -95,7 +97,7 @@ async def resolve_firebase_identity(uid: str) -> OperationalIdentity:
         if not initialized.scalar_one():
             raise PermissionError("Firebase account has no active operational binding")
         result = await session.execute(text("""
-            SELECT u.user_id, s.company_id, upper(r.name) AS database_role
+            SELECT u.user_id, s.company_id, s.store_id, upper(r.name) AS database_role
             FROM mottainai.app_user u
             JOIN mottainai.employee e ON e.employee_id=u.employee_id
             JOIN mottainai.employee_role r ON r.role_id=e.role_id
@@ -111,4 +113,4 @@ async def resolve_firebase_identity(uid: str) -> OperationalIdentity:
         role = DATABASE_ROLES.get(actor["database_role"]) if actor else None
         if not role:
             raise PermissionError("Firebase UID or operational role is not authorized")
-        return OperationalIdentity(actor["user_id"], actor["company_id"], role, uid)
+        return OperationalIdentity(actor["user_id"], actor["company_id"], role, uid, actor["store_id"])

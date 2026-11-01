@@ -144,6 +144,7 @@ async def _node_agente_dono_native(state: MottainaiState) -> MottainaiState:
     tools = build_toolkit(
         ["get_kpis", "get_sales_summary", "get_stock_alerts", "get_kpis_by_store", "retrieve_with_sources"],
         empresa_id=empresa_id, tool_runs=tool_runs, sources_acc=sources,
+        authenticated_store_id=None,
     )
 
     mem_context = format_memory_for_prompt(state["memory"])

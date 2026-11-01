@@ -1,5 +1,6 @@
 """JWT authentication, revocation and role-based authorization tests."""
 import unittest
+import base64
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -14,7 +15,7 @@ SETTINGS = SimpleNamespace(jwt_secret=SECRET, jwt_algorithm="HS256")
 
 
 def token(**claims: object) -> str:
-    payload = {"sub": "10", "empresa_id": 1, "role": "CLIENTE", "exp": datetime.now(timezone.utc) + timedelta(minutes=5)}
+    payload = {"sub": "10", "empresa_id": 1, "role": "CLIENTE", "use": "access", "exp": datetime.now(timezone.utc) + timedelta(minutes=5)}
     payload.update(claims)
     return jwt.encode(payload, SECRET, algorithm="HS256")
 
@@ -26,6 +27,47 @@ class JwtAuthenticationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual((principal.usuario_id, principal.empresa_id, principal.role), (10, 7, "DONO"))
 
+    async def test_accepts_sql_api_staff_token_with_base64_key_and_numeric_identity_claims(self):
+        raw_key = b"k" * 32
+        encoded_key = base64.b64encode(raw_key).decode("ascii")
+        settings = SimpleNamespace(
+            jwt_secret=encoded_key,
+            jwt_secret_base64=True,
+            jwt_algorithm="HS256",
+            jwt_issuer="https://mottainai.local",
+            jwt_audience="",
+        )
+        sql_api_claims = {
+            "sub": "firebase-staff-uid",
+            "usuario_id": 41,
+            "empresa_id": 7,
+            "store_id": 3,
+            "role": "GERENTE",
+            "roles": ["MANAGER"],
+            "use": "access",
+            "iss": "https://mottainai.local",
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+        }
+        signed = jwt.encode(sql_api_claims, raw_key, algorithm="HS256")
+
+        resolved = SimpleNamespace(
+            user_id=41, company_id=7, role="GERENTE", login_identity="firebase-staff-uid", store_id=3,
+        )
+        with (
+            patch("app.security.auth.get_settings", return_value=settings),
+            patch("app.database.identity.resolve_firebase_identity", new=AsyncMock(return_value=resolved)),
+        ):
+            principal = await decode_access_token(signed)
+
+        self.assertEqual((principal.usuario_id, principal.empresa_id, principal.store_id, principal.role),
+                         (41, 7, 3, "GERENTE"))
+        self.assertEqual(principal.operational_identity, "firebase-staff-uid")
+
+    async def test_rejects_refresh_token_for_business_routes(self):
+        with patch("app.security.auth.get_settings", return_value=SETTINGS):
+            with self.assertRaises(HTTPException):
+                await decode_access_token(token(use="refresh"))
+
     async def test_rejects_expired_token(self):
         with patch("app.security.auth.get_settings", return_value=SETTINGS):
             with self.assertRaises(HTTPException) as context:
@@ -36,6 +78,11 @@ class JwtAuthenticationTests(unittest.IsolatedAsyncioTestCase):
         with patch("app.security.auth.get_settings", return_value=SETTINGS):
             with self.assertRaises(HTTPException):
                 await decode_access_token(token(role="ADMINISTRADOR"))
+
+    async def test_rejects_legacy_store_staff_token_without_store_scope(self):
+        with patch("app.security.auth.get_settings", return_value=SETTINGS):
+            with self.assertRaises(HTTPException):
+                await decode_access_token(token(role="GERENTE"))
 
     async def test_enforces_configured_issuer_and_audience(self):
         settings = SimpleNamespace(
