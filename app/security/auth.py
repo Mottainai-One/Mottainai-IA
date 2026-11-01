@@ -16,9 +16,9 @@ Tokens minted without a "jti" (e.g. by an older client, or an external
 issuer that hasn't adopted the claim yet) still decode successfully — they
 just can't be individually revoked.
 """
-import hashlib
 import base64
 import binascii
+import hashlib
 import logging
 import re
 import time
