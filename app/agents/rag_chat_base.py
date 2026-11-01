@@ -7,11 +7,13 @@ factors that shape out once so the two prompts can keep diverging (they are
 tuned independently) without the surrounding plumbing drifting out of sync.
 """
 from langchain_core.messages import HumanMessage, SystemMessage
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.agents.runtime import MottainaiState, get_llm
 from app.memory.long_term import format_memory_for_prompt
 from app.observability.tool_runs import timed_tool_call
 from app.rag.retriever import retrieve_with_sources
+from app.tools.customer_public import get_customer_public_context
 
 
 async def run_rag_chat_agent(
@@ -35,10 +37,27 @@ async def run_rag_chat_agent(
             "customer_only": customer_only,
         },
     )
+    contexts = [rag_context]
+    if customer_only:
+        try:
+            public_context, public_sources = await timed_tool_call(
+                tool_runs,
+                "get_customer_public_context",
+                get_customer_public_context(query, empresa_id),
+                input={"query": query, "empresa_id": empresa_id},
+            )
+            if public_context:
+                contexts.append(public_context)
+            sources.extend(public_sources)
+        except SQLAlchemyError:
+            # Database rollout can precede or lag the IA rollout. The chat
+            # remains available and must say it lacks current business data.
+            pass
+    available_context = "\n\n".join(part for part in contexts if part)
     mem_context = format_memory_for_prompt(state["memory"])
 
     messages = [
-        SystemMessage(content=f"{system_prompt}\n\n--- Memória do usuário ---\n{mem_context}\n\n--- Informações disponíveis ---\n{rag_context}"),
+        SystemMessage(content=f"{system_prompt}\n\n--- Memória do usuário ---\n{mem_context}\n\n--- Informações disponíveis ---\n{available_context}"),
         *state["history"][-history_window:],
         HumanMessage(content=query),
     ]
@@ -49,7 +68,7 @@ async def run_rag_chat_agent(
     return {
         **state,
         "agent_response": response.content,
-        "grounding_context": rag_context,
+        "grounding_context": available_context,
         "sources": sources,
         "input_tokens": usage.get("input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),

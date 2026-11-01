@@ -34,6 +34,7 @@ class RunRagChatAgentTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("app.agents.rag_chat_base.retrieve_with_sources", new=AsyncMock(return_value=("contexto RAG", [{"type": "rag"}]))) as retrieve,
+            patch("app.agents.rag_chat_base.get_customer_public_context", new=AsyncMock(return_value=("", []))),
             patch("app.agents.rag_chat_base.format_memory_for_prompt", return_value="MEMORIA_FORMATADA"),
             patch("app.agents.rag_chat_base.get_llm", return_value=llm) as get_llm,
         ):
@@ -103,3 +104,4 @@ class AgentWiringTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
