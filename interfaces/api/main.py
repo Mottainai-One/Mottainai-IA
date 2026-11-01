@@ -51,7 +51,12 @@ from redis.exceptions import RedisError
 from app.agents.governanca import run_auditoria_execucoes, run_relatorio_conformidade
 from app.agents.runtime import get_llm_model_label
 from app.agents.supervisor import MottainaiState, mottainai_graph, node_guardrail_saida
-from app.cache.idempotency import InvalidIdempotencyKey, run_idempotent
+from app.cache.idempotency import (
+    IdempotencyInProgress,
+    InvalidIdempotencyKey,
+    run_idempotent,
+    scoped_write_key,
+)
 from app.cache.rate_limit import check_endpoint_rate_limit
 from app.database.mongo import get_mongo_db
 from app.database.operational_schema import OPERATIONAL_SCHEMA_READY_QUERY
@@ -80,8 +85,10 @@ from app.security.auth import (
     is_configured_jwt_secret,
     jwt_verification_key,
     require_auth,
+    require_operational_roles,
     require_roles,
 )
+from app.tools.analytics_tools import AnalyticsPublicationUnavailable
 from config.settings import get_settings
 
 settings = get_settings()
@@ -109,6 +116,10 @@ async def lifespan(app: FastAPI):
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
+    from app.database.postgres import validate_pg_security
+    await validate_pg_security()
+    from app.database.analytics import validate_analytics_security
+    await validate_analytics_security()
     # Startup: warm up embedding model
     from app.rag.retriever import get_embedding_model
     await asyncio.to_thread(get_embedding_model)
@@ -116,6 +127,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         from app.agents.runtime import close_llm_clients
+        from app.database.analytics import close_analytics_engine
         from app.database.mongo import close_mongo_client
         from app.database.postgres import close_pg_engine
         from app.database.redis_client import close_redis_pool
@@ -123,6 +135,7 @@ async def lifespan(app: FastAPI):
             close_redis_pool(),
             close_mongo_client(),
             close_pg_engine(),
+            close_analytics_engine(),
             close_llm_clients(),
         )
 
@@ -177,6 +190,8 @@ async def correlation_id_middleware(request: Request, call_next):
     while handling it — guardrails, supervisor routing, the agent, the
     Judge — can be grepped together. Echoed back in the response header.
     """
+    from app.database.identity import current_identity
+    identity_token = current_identity.set(None)
     incoming_id = request.headers.get("x-request-id", "")
     correlation_id = (
         incoming_id
@@ -200,6 +215,7 @@ async def correlation_id_middleware(request: Request, call_next):
             (time.perf_counter() - started) * 1000,
         )
         clear_correlation_id()
+        current_identity.reset(identity_token)
 
 
 # ─────────────────────────────────────────────
@@ -272,12 +288,18 @@ async def _dependency_checks() -> dict[str, str]:
         except Exception:
             return "unavailable"
 
-    mongodb, redis, postgres = await asyncio.gather(
+    async def check_analytics() -> str:
+        from app.database.analytics import validate_analytics_security
+        await validate_analytics_security()
+        return "ok"
+
+    mongodb, redis, postgres, analytics = await asyncio.gather(
         bounded(check_mongodb),
         bounded(check_redis),
         bounded(check_postgres),
+        bounded(check_analytics),
     )
-    return {"mongodb": mongodb, "redis": redis, "postgres": postgres}
+    return {"mongodb": mongodb, "redis": redis, "postgres": postgres, "analytics": analytics}
 
 
 async def _enforce_endpoint_rate_limit(
@@ -331,6 +353,26 @@ def _validate_uploaded_image(image_bytes: bytes, declared_content_type: str | No
     if normalized_declared != actual_content_type:
         raise ValueError("O conteúdo da imagem não corresponde ao tipo informado.")
     return actual_content_type
+
+
+@app.exception_handler(IdempotencyInProgress)
+async def idempotency_in_progress_handler(request: Request, exc: IdempotencyInProgress) -> JSONResponse:
+    return JSONResponse(status_code=409, content={
+        "detail": "Esta operação está em processamento ou aguardando conferência. "
+                  "Consulte seu resultado antes de tentar novamente e mantenha a mesma chave de operação.",
+    })
+
+
+@app.exception_handler(AnalyticsPublicationUnavailable)
+async def analytical_publication_handler(request: Request, exc: AnalyticsPublicationUnavailable) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": "Os dados analíticos ainda não têm uma carga publicada. Tente novamente mais tarde."})
+
+
+@app.exception_handler(PermissionError)
+async def operational_access_handler(request: Request, exc: PermissionError) -> JSONResponse:
+    return JSONResponse(status_code=403, content={
+        "detail": "Não foi possível validar seu vínculo ou suas permissões no banco operacional.",
+    })
 
 
 @app.exception_handler(Exception)
@@ -461,7 +503,7 @@ async def chat(
         "session_id": request.session_id,
         "empresa_id": principal.empresa_id,
         "usuario_id": principal.usuario_id,
-        "store_id": principal.store_id,
+        "store_id": principal.store_id if principal.role != "DONO" else None,
         "user_role": principal.role,
         "user_input": request.message,
         "sanitized_input": "",
@@ -762,7 +804,7 @@ class ReceberMercadoriaRequest(BaseModel):
 @app.post("/funcionario/descartar-lote", tags=["Funcionário"])
 async def descartar_lote(
     body: DescartarLoteRequest,
-    principal: Annotated[AuthContext, Depends(require_roles("ESTOQUISTA", "GERENTE", "DONO"))],
+    principal: Annotated[AuthContext, Depends(require_operational_roles("ESTOQUISTA", "GERENTE", "DONO"))],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ):
     """
@@ -779,32 +821,32 @@ async def descartar_lote(
     from app.tools.postgres_tools import DisposalCeilingExceeded, discard_batch
 
     async def _discard() -> dict:
-        try:
-            return await discard_batch(
-                empresa_id=principal.empresa_id,
-                store_id=body.store_id,
-                batch_id=body.batch_id,
-                employee_id=principal.usuario_id,
-                quantity=body.quantity,
-                reason=body.reason,
-                role=principal.role,
-                observation=body.observation,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-        except DisposalCeilingExceeded as exc:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        return await discard_batch(
+            empresa_id=principal.empresa_id,
+            store_id=body.store_id,
+            batch_id=body.batch_id,
+            user_id=principal.usuario_id,
+            quantity=body.quantity,
+            reason=body.reason,
+            role=principal.role,
+            observation=body.observation,
+        )
 
     try:
-        return await run_idempotent(principal.empresa_id, idempotency_key, _discard)
+        return await run_idempotent(principal.empresa_id, scoped_write_key(
+            principal.usuario_id, "discard_batch", idempotency_key), _discard)
     except InvalidIdempotencyKey as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except DisposalCeilingExceeded as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
 
 @app.post("/funcionario/receber-mercadoria", tags=["Funcionário"])
 async def receber_mercadoria(
     body: ReceberMercadoriaRequest,
-    principal: Annotated[AuthContext, Depends(require_roles("ESTOQUISTA", "GERENTE", "DONO"))],
+    principal: Annotated[AuthContext, Depends(require_operational_roles("ESTOQUISTA", "GERENTE", "DONO"))],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ):
     """
@@ -818,22 +860,22 @@ async def receber_mercadoria(
     from app.tools.postgres_tools import receive_inventory
 
     async def _receive() -> dict:
-        try:
-            return await receive_inventory(
-                empresa_id=principal.empresa_id,
-                store_id=body.store_id,
-                batch_id=body.batch_id,
-                employee_id=principal.usuario_id,
-                quantity=body.quantity,
-                observation=body.observation,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        return await receive_inventory(
+            empresa_id=principal.empresa_id,
+            store_id=body.store_id,
+            batch_id=body.batch_id,
+            user_id=principal.usuario_id,
+            quantity=body.quantity,
+            observation=body.observation,
+        )
 
     try:
-        return await run_idempotent(principal.empresa_id, idempotency_key, _receive)
+        return await run_idempotent(principal.empresa_id, scoped_write_key(
+            principal.usuario_id, "receive_inventory", idempotency_key), _receive)
     except InvalidIdempotencyKey as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @app.get("/metrics/summary", tags=["Métricas"])

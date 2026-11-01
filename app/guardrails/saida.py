@@ -64,9 +64,12 @@ def guardrail_saida(response: str, user_role: str = "cliente") -> SaidaResult:
             warnings=["Resposta bloqueada: possível vazamento de dado interno."],
         )
 
-    # 4. Truncates an excessively long response
+    # 4. Never release a cut JSON object or sentence as a successful answer.
     if len(output) > MAX_RESPONSE_LEN:
-        output = output[:MAX_RESPONSE_LEN] + "\n\n[Resposta truncada por segurança.]"
-        warnings.append("Resposta truncada por exceder limite de tamanho.")
+        return SaidaResult(
+            safe=False,
+            output="A análise ficou extensa demais. Peça um resumo ou selecione uma loja ou produto para detalhar.",
+            warnings=["Resposta bloqueada por exceder limite de tamanho."],
+        )
 
     return SaidaResult(safe=True, output=output, warnings=warnings)

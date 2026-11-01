@@ -16,12 +16,12 @@ Tokens minted without a "jti" (e.g. by an older client, or an external
 issuer that hasn't adopted the claim yet) still decode successfully — they
 just can't be individually revoked.
 """
-import logging
-import time
+import hashlib
 import base64
 import binascii
-import asyncio
-from collections.abc import AsyncIterator
+import logging
+import re
+import time
 from dataclasses import dataclass
 from typing import Annotated
 
@@ -30,8 +30,6 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from config.settings import get_settings
-from app.security.tenant_context import TenantIdentity, reset_tenant_identity, set_tenant_identity
-from app.security.firebase_auth import firebase_provider_unavailable, verify_firebase_id_token
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +47,8 @@ class AuthContext:
     role: str
     jti: str | None = None
     exp: int | None = None
+    operational_identity: str | None = None
     store_id: int | None = None
-    firebase_uid: str = ""
 
 
 def _invalid_token() -> HTTPException:
@@ -80,7 +78,7 @@ def is_configured_shared_secret(secret: object) -> bool:
 
 
 def jwt_verification_key(settings: object) -> str | bytes:
-    """Returns the signing key in the same byte representation used by the issuer."""
+    """Decode Base64 secrets exactly as the SQL API's JWT signer does."""
     secret = getattr(settings, "jwt_secret", "")
     if not is_configured_jwt_secret(secret):
         raise ValueError("JWT_SECRET is missing, weak or a placeholder")
@@ -122,76 +120,47 @@ async def revoke_token(jti: str, exp: int) -> None:
 async def decode_access_token(token: str) -> AuthContext:
     settings = get_settings()
     try:
-        unverified_claims = jwt.decode(token, options={"verify_signature": False})
-    except (jwt.PyJWTError, TypeError, ValueError) as exc:
+        algorithm = jwt.get_unverified_header(token).get("alg")
+    except jwt.PyJWTError as exc:
         raise _invalid_token() from exc
+    if algorithm == "RS256":
+        from app.database.identity import (
+            resolve_firebase_customer_identity,
+            resolve_firebase_identity,
+        )
+        from app.security.firebase_auth import (
+            FirebaseVerificationUnavailable,
+            verify_firebase_id_token,
+        )
 
-    firebase_issuer = f"https://securetoken.google.com/{getattr(settings, 'firebase_project_id', '')}"
-    firebase_project_id = getattr(settings, "firebase_project_id", "")
-    if firebase_project_id and unverified_claims.get("iss") == firebase_issuer:
         try:
-            claims = await asyncio.to_thread(
-                verify_firebase_id_token, token, firebase_project_id
-            )
-        except Exception as exc:
-            if firebase_provider_unavailable(exc):
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Firebase token verification is temporarily unavailable.",
-                ) from exc
+            firebase = await verify_firebase_id_token(token)
+        except jwt.PyJWTError as exc:
             raise _invalid_token() from exc
-
-        role = str(claims.get("role", "")).upper()
-        if role not in _ALLOWED_ROLES:
+        except FirebaseVerificationUnavailable as exc:
+            raise HTTPException(status_code=503, detail="Não foi possível validar sua sessão. Tente novamente.") from exc
+        jti = "firebase-" + hashlib.sha256(token.encode()).hexdigest()
+        if await _is_revoked(jti):
             raise _invalid_token()
-        try:
-            firebase_uid = str(claims["sub"])
-            claimed_user_id = _positive_int(claims["user_id"])
-            raw_store_ids = [claims[key] for key in ("store_id", "storeID", "storeId") if claims.get(key) is not None]
-            claimed_store_id = _positive_int(raw_store_ids[0]) if raw_store_ids else None
-            if any(_positive_int(value) != claimed_store_id for value in raw_store_ids):
-                raise ValueError
-
-            from sqlalchemy import text
-            from app.database.postgres import get_pg_session
-
-            async with get_pg_session() as session:
-                established = await session.execute(
-                    text("SELECT mottainai.fn_bootstrap_staff_context(:uid, 'FIREBASE_UID')"),
-                    {"uid": firebase_uid},
-                )
-                if not established.scalar():
-                    raise ValueError
-                resolved = await session.execute(text(
-                    "SELECT mottainai.fn_get_current_user_id() AS usuario_id, "
-                    "mottainai.fn_get_current_company_id() AS empresa_id, "
-                    "mottainai.fn_get_current_store_id() AS store_id"
-                ))
-                identity = resolved.mappings().one()
-                usuario_id = _positive_int(identity["usuario_id"])
-                empresa_id = _positive_int(identity["empresa_id"])
-                store_id = _positive_int(identity["store_id"])
-                if usuario_id != claimed_user_id or (claimed_store_id is not None and store_id != claimed_store_id):
-                    raise ValueError
-
+        customer = await resolve_firebase_customer_identity(firebase.uid)
+        if customer is not None:
+            # Negative IDs keep customer chat/session/memory keys disjoint
+            # from employee app_user IDs in Mongo and Redis.
             return AuthContext(
-                usuario_id=usuario_id,
-                empresa_id=empresa_id,
-                role=role,
-                exp=_positive_int(claims.get("exp")) if claims.get("exp") else None,
-                store_id=store_id,
-                firebase_uid=firebase_uid,
+                -customer.customer_id, customer.chat_company_id, "CLIENTE",
+                jti, firebase.expires_at, None,
             )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise _invalid_token() from exc
-
+        identity = await resolve_firebase_identity(firebase.uid)
+        return AuthContext(identity.user_id, identity.company_id, identity.role,
+                           jti, firebase.expires_at, identity.login_identity,
+                           identity.store_id)
     if not is_configured_jwt_secret(settings.jwt_secret):
         raise _invalid_token()
 
     try:
         decode_options: dict[str, object] = {
             "algorithms": [settings.jwt_algorithm],
-            "options": {"require": ["exp", "sub", "empresa_id", "role", "use"]},
+            "options": {"require": ["exp", "sub", "empresa_id", "role"]},
         }
         issuer = getattr(settings, "jwt_issuer", "").strip()
         audience = getattr(settings, "jwt_audience", "").strip()
@@ -201,47 +170,67 @@ async def decode_access_token(token: str) -> AuthContext:
             decode_options["audience"] = audience
         signing_key = jwt_verification_key(settings)
         claims = jwt.decode(token, signing_key, **decode_options)
-        firebase_uid = claims["sub"]
-        if not isinstance(firebase_uid, str) or not firebase_uid.strip():
-            raise ValueError
-        if claims["use"] != "access":
-            raise ValueError
         role = str(claims["role"]).upper()
         if role not in _ALLOWED_ROLES:
             raise ValueError
+        if claims.get("use") not in (None, "access"):
+            raise ValueError
         jti = claims.get("jti")
         exp = claims.get("exp")
+        operational_identity = claims.get("operational_identity")
+        if operational_identity is not None and (
+            not isinstance(operational_identity, str)
+            or re.fullmatch(r"EMAIL_SHA256_[A-Fa-f0-9]{64}", operational_identity) is None
+        ):
+            raise ValueError
         if jti and await _is_revoked(str(jti)):
             raise ValueError
+        if "usuario_id" in claims:
+            firebase_uid = claims["sub"]
+            if not isinstance(firebase_uid, str) or not firebase_uid.strip():
+                raise ValueError
+            from app.database.identity import resolve_firebase_identity
+
+            identity = await resolve_firebase_identity(firebase_uid)
+            user_id = _positive_int(claims["usuario_id"])
+            company_id = _positive_int(claims["empresa_id"])
+            claimed_store = _positive_int(claims["store_id"]) if claims.get("store_id") is not None else None
+            if (identity.user_id != user_id or identity.company_id != company_id
+                    or identity.role != role
+                    or (claimed_store is not None and identity.store_id != claimed_store)):
+                raise ValueError
+            operational_identity = identity.login_identity
+            store_id = identity.store_id
+        else:
+            user_id = _positive_int(claims["sub"])
+            company_id = _positive_int(claims["empresa_id"])
+            store_id = None
         return AuthContext(
-            usuario_id=_positive_int(claims.get("usuario_id", claims["sub"])),
-            empresa_id=_positive_int(claims["empresa_id"]),
+            usuario_id=user_id,
+            empresa_id=company_id,
             role=role,
             jti=str(jti) if jti else None,
             exp=_positive_int(exp) if exp else None,
-            store_id=_positive_int(claims["store_id"]) if claims.get("store_id") is not None else None,
-            firebase_uid=firebase_uid,
+            operational_identity=operational_identity,
+            store_id=store_id,
         )
-    except (jwt.PyJWTError, binascii.Error, KeyError, TypeError, ValueError) as exc:
+    except (jwt.PyJWTError, binascii.Error, KeyError, TypeError, ValueError, PermissionError) as exc:
         raise _invalid_token() from exc
 
 
 async def require_auth(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
-) -> AsyncIterator[AuthContext]:
+) -> AuthContext:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise _invalid_token()
     principal = await decode_access_token(credentials.credentials)
-    token = set_tenant_identity(TenantIdentity(
-        firebase_uid=principal.firebase_uid,
-        usuario_id=principal.usuario_id,
-        empresa_id=principal.empresa_id,
-        store_id=principal.store_id,
-    ))
-    try:
-        yield principal
-    finally:
-        reset_tenant_identity(token)
+    from app.database.identity import OperationalIdentity, current_identity
+    current_identity.set(
+        OperationalIdentity(principal.usuario_id, principal.empresa_id,
+                            principal.role, principal.operational_identity, principal.store_id)
+        if principal.operational_identity and principal.role != "CLIENTE" else None
+    )
+    return principal
 
 
 def require_roles(*roles: str):
@@ -250,6 +239,21 @@ def require_roles(*roles: str):
     async def dependency(principal: Annotated[AuthContext, Depends(require_auth)]) -> AuthContext:
         if principal.role not in allowed:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permission.")
+        return principal
+
+    return dependency
+
+
+def require_operational_roles(*roles: str):
+    """Revalidate the database account before any write or cached replay."""
+    role_dependency = require_roles(*roles)
+
+    async def dependency(principal: Annotated[AuthContext, Depends(role_dependency)]) -> AuthContext:
+        from app.database.identity import initialize_pg_context
+        from app.database.postgres import get_pg_session
+
+        async with get_pg_session() as session:
+            await initialize_pg_context(session, principal.empresa_id)
         return principal
 
     return dependency

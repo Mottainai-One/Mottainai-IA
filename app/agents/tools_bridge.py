@@ -29,12 +29,12 @@ from the model even if validation didn't strip it.
 """
 from __future__ import annotations
 
-import json
 from typing import Any, Callable
 
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
+from app.agents.context import model_context_json
 from app.observability.tool_runs import timed_tool_call
 from app.rag.retriever import retrieve_with_sources
 from app.tools.postgres_tools import (
@@ -50,13 +50,8 @@ from config.settings import get_settings
 
 
 def _to_llm_content(value: Any) -> str:
-    """Same lossy-but-safe round trip already trusted elsewhere in this
-    codebase (app/observability/tool_runs.py's _as_object) for turning a
-    Postgres result (Decimal, date) into something JSON-safe — here it
-    becomes the literal text handed back to the model as the tool's
-    result, not a Mongo document, so it stays a string rather than a
-    dict/None-shaped object."""
-    return json.dumps(value, default=str, ensure_ascii=False)
+    """Serialize tool evidence without confusing decimal and grouping separators."""
+    return model_context_json(value)
 
 
 class _StockAlertsArgs(BaseModel):

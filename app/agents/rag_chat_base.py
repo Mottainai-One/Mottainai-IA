@@ -23,11 +23,17 @@ async def run_rag_chat_agent(
 ) -> MottainaiState:
     query = state["sanitized_input"]
     empresa_id = state["empresa_id"]
+    customer_only = state.get("user_role", "").upper() == "CLIENTE"
     tool_runs: list[dict] = []
 
     rag_context, sources = await timed_tool_call(
-        tool_runs, "retrieve_with_sources", retrieve_with_sources(query, empresa_id),
-        input={"query": query, "empresa_id": empresa_id},
+        tool_runs, "retrieve_with_sources",
+        retrieve_with_sources(query, empresa_id, customer_only=customer_only),
+        input={
+            "query": query,
+            "empresa_id": empresa_id,
+            "customer_only": customer_only,
+        },
     )
     mem_context = format_memory_for_prompt(state["memory"])
 
@@ -43,6 +49,7 @@ async def run_rag_chat_agent(
     return {
         **state,
         "agent_response": response.content,
+        "grounding_context": rag_context,
         "sources": sources,
         "input_tokens": usage.get("input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),

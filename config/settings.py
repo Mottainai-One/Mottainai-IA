@@ -31,16 +31,27 @@ class Settings(BaseSettings):
 
     # Databases
     postgres_dsn: str = Field(
-        default="postgresql+asyncpg://mottainai:mottainai@localhost:5432/mottainai",
+        default="postgresql+asyncpg://mottainai_ia:configure-local-password@localhost:5432/mottainai_operational",
         validation_alias=AliasChoices("POSTGRES_DSN", "DATABASE_URL"),
     )
+    analytics_postgres_dsn: str = ""
+    postgres_container_dsn: str = ""
+    analytics_postgres_container_dsn: str = ""
     mongo_uri: str = Field(
         default="mongodb://localhost:27017",
         validation_alias=AliasChoices("MONGO_URI", "MONGO_URL"),
     )
     mongo_db: str = "mottainai"
+    # Optional Neo4j projection used by scripts/sync_neo4j_rag.py. It is not
+    # part of the chatbot request path.
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = ""
+    neo4j_database: str = "neo4j"
     redis_url: str = "redis://localhost:6379/0"
     redis_password: str = ""
+    redis_cache_url: str = ""
+    redis_cache_password: str = ""
     redis_max_connections: int = 20
     # 2s was too tight in practice: Docker Desktop's networking on Windows can
     # add enough latency to the first connection that it consistently timed
@@ -71,6 +82,10 @@ class Settings(BaseSettings):
     jwt_secret: str = ""
     jwt_secret_base64: bool = False
     jwt_algorithm: str = "HS256"
+    firebase_auth_enabled: bool = False
+    firebase_project_id: str = ""
+    # Shared, customer-visible RAG tenant seeded by scripts/setup_mongo.py.
+    customer_chat_empresa_id: int = Field(default=1, ge=1)
     jwt_expiration_minutes: int = 60
     jwt_issuer: str = ""
     jwt_audience: str = ""
@@ -83,6 +98,7 @@ class Settings(BaseSettings):
     # Robustness: automatic retries on transient LLM provider failure
     # (timeout, rate limit, 5xx error) with exponential backoff + jitter.
     llm_max_retries: int = 3
+    llm_tokens_per_minute: int = Field(default=0, ge=0)
     llm_request_timeout_seconds: float = Field(default=90.0, gt=0, le=180)
     predictive_timeout_seconds: float = Field(default=180.0, gt=0, le=300)
     vision_timeout_seconds: float = Field(default=60.0, gt=0, le=180)
@@ -173,6 +189,12 @@ class Settings(BaseSettings):
     a2a_shared_token: str = ""
     mcp_empresa_id: int = 0
     a2a_empresa_id: int = 0
+    mcp_user_id: int = 0
+    mcp_operational_identity: str = ""
+    mcp_role: str = "DONO"
+    a2a_user_id: int = 0
+    a2a_operational_identity: str = ""
+    a2a_role: str = "DONO"
     public_base_url: str = "http://localhost:8000"
 
     # Outbound webhook for CRITICAL alerts (push, unlike the Redis inbox in
@@ -228,6 +250,8 @@ class Settings(BaseSettings):
             )
 
         problems = []
+        if self.firebase_auth_enabled and not self.firebase_project_id.strip():
+            problems.append("FIREBASE_PROJECT_ID is required when Firebase authentication is enabled")
         if not strong(self.jwt_secret):
             problems.append("JWT_SECRET must be a non-placeholder secret with at least 32 characters")
         if self.mcp_empresa_id > 0 and not strong(self.mcp_shared_token):

@@ -1,79 +1,88 @@
-"""Firebase ID-token verification for the existing Android client contract."""
-from __future__ import annotations
-
+"""Verify Firebase client ID tokens with Google's rotating public certificates."""
+import asyncio
 import re
-import threading
 import time
 from dataclasses import dataclass
-from typing import Any
 
-from google.auth import exceptions as google_auth_exceptions
-from google.auth.transport.requests import Request
-from google.oauth2 import id_token
+import httpx
+import jwt
+from cryptography import x509
 
-_CERTS_URL = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"
-_cache_lock = threading.Lock()
-_cached_certificates: dict[str, Any] | None = None
-_cache_expires_at = 0.0
+from config.settings import get_settings
 
-
-@dataclass
-class _CachedHttpResponse:
-    status: int
-    headers: dict[str, str]
-    data: bytes
+_CERTIFICATES_URL = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"
+_certificates: dict[str, str] = {}
+_expires_at = 0.0
+_fetched_at = 0.0
+_certificate_lock = asyncio.Lock()
 
 
-class _CachedGoogleRequest:
-    """Cache Google's rotating Firebase signing certificates per Cache-Control."""
-
-    def __init__(self) -> None:
-        self._request = Request()
-
-    def __call__(self, url: str, method: str = "GET", **kwargs: Any) -> Any:
-        global _cached_certificates, _cache_expires_at
-        if url != _CERTS_URL:
-            return self._request(url, method=method, timeout=6, **kwargs)
-
-        now = time.monotonic()
-        with _cache_lock:
-            if _cached_certificates is not None and now < _cache_expires_at:
-                return _CachedHttpResponse(200, {}, _cached_certificates)
-
-            response = self._request(url, method=method, timeout=6, **kwargs)
-            if response.status != 200:
-                return response
-
-            max_age = 300
-            cache_control = response.headers.get("cache-control", "")
-            match = re.search(r"(?:^|,)\s*max-age=(\d+)", cache_control, re.IGNORECASE)
-            if match:
-                max_age = max(60, int(match.group(1)))
-            _cached_certificates = response.data
-            _cache_expires_at = time.monotonic() + max_age
-            return response
+class FirebaseVerificationUnavailable(RuntimeError):
+    """The trusted certificate service cannot currently verify the token."""
 
 
-_cached_request = _CachedGoogleRequest()
+@dataclass(frozen=True)
+class FirebaseIdentity:
+    uid: str
+    email: str
+    expires_at: int
 
 
-def verify_firebase_id_token(token: str, project_id: str) -> dict[str, Any]:
-    """Verify a client Firebase ID token and return only signed claims."""
-    if not project_id:
-        raise ValueError("FIREBASE_PROJECT_ID is not configured")
-    claims = id_token.verify_firebase_token(token, _cached_request, audience=project_id)
-    if claims.get("iss") != f"https://securetoken.google.com/{project_id}":
-        raise ValueError("Firebase token issuer does not match the configured project")
-    subject = claims.get("sub")
-    if not isinstance(subject, str) or not subject.strip():
-        raise ValueError("Firebase token subject is missing")
-    now = time.time()
-    for time_claim in ("iat", "auth_time"):
-        value = claims.get(time_claim)
-        if not isinstance(value, (int, float)) or value > now + 60:
-            raise ValueError(f"Firebase token has an invalid {time_claim} claim")
-    return claims
+async def _signing_key(kid: str):
+    global _certificates, _expires_at, _fetched_at
+    now = time.monotonic()
+    if now >= _expires_at or (kid not in _certificates and now - _fetched_at > 60):
+        async with _certificate_lock:
+            now = time.monotonic()
+            if now >= _expires_at or (kid not in _certificates and now - _fetched_at > 60):
+                try:
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        response = await client.get(_CERTIFICATES_URL)
+                    response.raise_for_status()
+                    certificates = response.json()
+                    if not isinstance(certificates, dict) or not certificates:
+                        raise ValueError("Invalid certificate response")
+                    if not all(isinstance(k, str) and isinstance(v, str) for k, v in certificates.items()):
+                        raise ValueError("Invalid certificate response")
+                    match = re.search(r"max-age=(\d+)", response.headers.get("cache-control", ""))
+                    ttl = min(int(match[1]), 3600) if match else 300
+                    _certificates = certificates
+                    _fetched_at = now
+                    _expires_at = now + ttl
+                except (httpx.HTTPError, ValueError) as exc:
+                    raise FirebaseVerificationUnavailable("Firebase certificate verification unavailable") from exc
+    certificate = _certificates.get(kid)
+    if not certificate:
+        raise jwt.InvalidTokenError("Unknown Firebase signing key")
+    try:
+        return x509.load_pem_x509_certificate(certificate.encode()).public_key()
+    except ValueError as exc:
+        raise FirebaseVerificationUnavailable("Invalid Firebase signing certificate") from exc
 
 
-def firebase_provider_unavailable(exc: Exception) -> bool:
-    return isinstance(exc, google_auth_exceptions.TransportError)
+async def verify_firebase_id_token(token: str) -> FirebaseIdentity:
+    """Do not trust role/company claims; SQL resolves those after verification."""
+    settings = get_settings()
+    if not settings.firebase_auth_enabled or not settings.firebase_project_id:
+        raise jwt.InvalidTokenError("Firebase authentication is disabled")
+    header = jwt.get_unverified_header(token)
+    kid = header.get("kid")
+    if header.get("alg") != "RS256" or not isinstance(kid, str) or not 0 < len(kid) <= 128:
+        raise jwt.InvalidTokenError("Invalid Firebase signing header")
+    claims = jwt.decode(
+        token, await _signing_key(kid), algorithms=["RS256"],
+        audience=settings.firebase_project_id,
+        issuer=f"https://securetoken.google.com/{settings.firebase_project_id}",
+        options={"require": ["exp", "iat", "auth_time", "sub", "aud", "iss", "email"]},
+    )
+    uid, email = claims["sub"], claims["email"]
+    if not isinstance(uid, str) or not 0 < len(uid) <= 128:
+        raise jwt.InvalidTokenError("Invalid Firebase UID")
+    if not isinstance(email, str) or not email.strip() or len(email) > 320:
+        raise jwt.InvalidTokenError("Firebase email is required")
+    for field in ("iat", "auth_time", "exp"):
+        if type(claims[field]) is not int or claims[field] < 0:
+            raise jwt.InvalidTokenError("Invalid Firebase timestamp")
+    if claims["auth_time"] > time.time() or claims["auth_time"] > claims["iat"]:
+        raise jwt.InvalidTokenError("Invalid Firebase authentication time")
+    return FirebaseIdentity(uid, email.strip().lower(), claims["exp"])

@@ -35,10 +35,10 @@ default — see config/settings.py):
   eight read-only tools across both agents, and neither of those two
   is among them.
 """
-import json
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from app.agents.context import NUMBER_GUIDANCE, model_context_json
 from app.agents.runtime import MottainaiState, gather_or_raise, get_llm, run_agent_with_tools
 from app.agents.tools_bridge import build_toolkit
 from app.memory.long_term import format_memory_for_prompt
@@ -71,10 +71,11 @@ Suas responsabilidades:
 - Responder com precisão técnica sobre estoque, inventário, alertas e entrada de mercadorias.
 - Usar os dados operacionais fornecidos como fonte da verdade.
 - Apresentar dados de forma objetiva: números exatos, prioridades claras.
+- Ao informar falta de estoque, limite a conclusão aos itens consultados; não conclua que não há falta na empresa a partir de uma amostra.
 - NÃO inventar dados de estoque, quantidades ou validades.
 - Para ações críticas (descartes, transferências), orientar sobre o procedimento correto.
 - Você NÃO registra recebimentos ou descartes diretamente pelo chat. Se o usuário quiser fazer isso, informe que a ação está disponível nas telas/rotas dedicadas do sistema para receber mercadoria ou descartar um lote, e explique quais dados serão necessários (loja, lote, quantidade e, no caso de descarte, o motivo).
-- Alertas críticos devem sempre ser destacados no início da resposta.
+- Destaque alertas críticos no início somente quando priority=CRITICAL estiver explícito nos dados. Prioridade ausente não comprova criticidade.
 - Se houver uma análise de prateleira recente nesta conversa, você pode referenciá-la naturalmente (ex: "na foto que você enviou, a prateleira está com X% de ocupação") quando for relevante para a pergunta do usuário.
 - NUNCA mencionar nomes internos de sistemas, agentes, bases de dados ou tecnologias (ex: "PostgreSQL", "RAG", "contexto") — fale como uma única assistente operacional do Mottainai.
 - Você SÓ responde assuntos operacionais do Mottainai (estoque, inventário, alertas, procedimentos). Se a pergunta for sobre qualquer outro assunto, recuse educadamente e explique que só pode ajudar com temas operacionais do Mottainai.
@@ -152,16 +153,16 @@ async def _node_agente_funcionario_legacy(state: MottainaiState) -> MottainaiSta
     )
     ops_context = f"""
 ALERTAS ATIVOS ({len(alerts_data)}):
-{json.dumps(alerts_data, default=str, ensure_ascii=False, indent=2)}
+{model_context_json(alerts_data)}
 
 ESTOQUE (situação crítica primeiro):
-{json.dumps(inventory_data[:10], default=str, ensure_ascii=False, indent=2)}
+{model_context_json(inventory_data[:10])}
 
 LOTES VENCENDO EM 7 DIAS (total {len(expiring_data)}, listando os {len(expiring_shown)} mais urgentes):
-{json.dumps(expiring_shown, default=str, ensure_ascii=False, indent=2)}
+{model_context_json(expiring_shown)}
 
 ANÁLISES DE PRATELEIRA RECENTES NESTA CONVERSA ({len(vision_analyses)}):
-{json.dumps(vision_analyses, default=str, ensure_ascii=False, indent=2)}
+{model_context_json(vision_analyses)}
 
 NOTIFICAÇÕES:
 {notifications_text}
@@ -170,7 +171,7 @@ NOTIFICAÇÕES:
     mem_context = format_memory_for_prompt(state["memory"])
 
     messages = [
-        SystemMessage(content=f"{SYSTEM_PROMPT}\n\n--- Memória do usuário ---\n{mem_context}\n\n--- Dados operacionais ---\n{ops_context}\n\n--- Base de conhecimento ---\n{rag_context}"),
+        SystemMessage(content=f"{SYSTEM_PROMPT}\n{NUMBER_GUIDANCE}\n\n--- Memória do usuário ---\n{mem_context}\n\n--- Dados operacionais ---\n{ops_context}\n\n--- Base de conhecimento ---\n{rag_context}"),
         *state["history"][-8:],
         HumanMessage(content=query),
     ]
@@ -180,13 +181,14 @@ NOTIFICAÇÕES:
     content = response.content
 
     usage = response.usage_metadata or {}
-    extra_sources = [{"type": "sql", "ref": "mottainai.alert + inventory + batch", "score": None}]
+    extra_sources = [{"type": "sql", "ref": "mottainai_analytics.fact_alert_snapshot + fact_inventory_snapshot", "score": None}]
     if vision_analyses:
         extra_sources.append({"type": "other", "ref": "app.agents.visao (ai_results)", "score": None})
 
     return {
         **state,
         "agent_response": content,
+        "grounding_context": ops_context + "\n" + rag_context,
         "sources": sources + extra_sources,
         "input_tokens": usage.get("input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),
@@ -227,11 +229,11 @@ async def _node_agente_funcionario_native(state: MottainaiState) -> MottainaiSta
     )
 
     mem_context = format_memory_for_prompt(state["memory"])
-    vision_text = json.dumps(vision_analyses, default=str, ensure_ascii=False, indent=2)
+    vision_text = model_context_json(vision_analyses)
     messages = [
         SystemMessage(
             content=(
-                f"{SYSTEM_PROMPT}\n{NATIVE_TOOL_GUIDANCE}"
+                f"{SYSTEM_PROMPT}\n{NUMBER_GUIDANCE}\n{NATIVE_TOOL_GUIDANCE}"
                 f"\n\n--- Memória do usuário ---\n{mem_context}"
                 f"\n\n--- Notificações ---\n{notifications_text}"
                 f"\n\n--- Análises de prateleira recentes nesta conversa ---\n{vision_text}"

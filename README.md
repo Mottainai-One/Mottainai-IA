@@ -23,6 +23,7 @@ o Supervisor roteia por perfil e intenção, o Juiz audita a resposta e os guard
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-asyncpg-336791?style=flat&logo=postgresql&logoColor=white)
 ![MongoDB](https://img.shields.io/badge/MongoDB-motor-47A248?style=flat&logo=mongodb&logoColor=white)
 ![Redis](https://img.shields.io/badge/Redis-redis--py-FF4438?style=flat&logo=redis&logoColor=white)
+![Neo4j](https://img.shields.io/badge/Neo4j-optional%20RAG%20graph-008CC1?style=flat&logo=neo4j&logoColor=white)
 ![Groq](https://img.shields.io/badge/LLM-Groq%20%2F%20Ollama-F55036?style=flat)
 
 </div>
@@ -64,6 +65,7 @@ O Juiz é configurado em modo fail-closed: se a resposta não for adequada, ela 
 - **Motor preditivo** — gera recomendações com base em histórico de vendas e clima, antecipando compra, risco de perda e ações de reposição.
 - **Análise de prateleira** — aceita imagens de prateleira para análise visual com Gemini: ocupação, produtos detectados, vazio visual e sugestões de ação.
 - **Base de conhecimento (RAG)** — responde clientes com documentos da própria empresa; gerentes e donos podem subir novos documentos via API.
+- **Grafo de citações RAG (opcional)** — projeta conversas, respostas e fontes MongoDB no Neo4j para consultas por traversal; não participa do caminho do chat. Veja [NEO4J_RAG_GRAPH.md](docs/NEO4J_RAG_GRAPH.md).
 - **Governança e auditoria** — registra métricas, latências, execução por agente e relatórios de conformidade.
 
 ## Arquitetura
@@ -121,15 +123,16 @@ Diagrama completo, com todos os agentes lado a lado, em [ARQUITETURA.md](ARQUITE
 | LLM alternativo | [Ollama](https://ollama.com/) Cloud (`gpt-oss:20b`) ou local (`qwen2.5:7b-instruct`) | — | Fallback cloud ou modo 100% offline, sem enviar dados a terceiros |
 | Visão computacional | [Gemini](https://ai.google.dev/) (`gemini-2.5-flash`) + [Pillow](https://python-pillow.org/) | 11.1 | Análise visual de prateleira |
 | Embeddings | [Sentence Transformers](https://sbert.net/) (`all-MiniLM-L6-v2`) + [PyTorch](https://pytorch.org/) | 3.4 / 2.6 | Embeddings locais para RAG, sem custo de API |
-| Dados operacionais | [PostgreSQL](https://www.postgresql.org/) via [asyncpg](https://github.com/MagicStack/asyncpg) + [SQLAlchemy async](https://www.sqlalchemy.org/) | 0.30 / 2.0 | Fonte da verdade do negócio (schema v6) |
+| Dados operacionais | [PostgreSQL](https://www.postgresql.org/) via [asyncpg](https://github.com/MagicStack/asyncpg) + [SQLAlchemy async](https://www.sqlalchemy.org/) | 0.30 / 2.0 | Fonte operacional: Mottainai-Banco-Operacional develop |
 | Dados de IA | [MongoDB](https://www.mongodb.com/) via [Motor](https://motor.readthedocs.io/) | 3.7 | Histórico, memória de longo prazo, RAG e auditoria |
 | Cache e rate limit | [Redis](https://redis.io/) via [redis-py async](https://github.com/redis/redis-py) | 5.2 | Rate limit, cache de RAG e notificações |
+| Grafo opcional | [Neo4j](https://neo4j.com/) via [Python Driver](https://neo4j.com/docs/python-manual/current/) | 6.4 | Projeção acadêmica para traversal das citações RAG, fora do runtime do chat |
 | Clima | [Open-Meteo](https://open-meteo.com/) | — | Previsão do tempo para o Motor Preditivo (sem API key) |
 | Autenticação | [PyJWT](https://pyjwt.readthedocs.io/) (HS256) | 2.10 | Tokens com `empresa_id`, `usuario_id` e `role` |
 | Interoperabilidade | [MCP](https://modelcontextprotocol.io/) + [A2A](https://a2a-protocol.org/) | — | Exposição do Mottainai como serviço para outros agentes |
 | Resiliência | [tenacity](https://tenacity.readthedocs.io/) + [httpx](https://www.python-httpx.org/) | 9.0 / 0.28 | Retry com backoff exponencial e HTTP assíncrono |
 | Observabilidade | [structlog](https://www.structlog.org/) | 24.4 | Logs estruturados |
-| Infra local | [Docker Compose](https://docs.docker.com/compose/) | — | Provisionamento de PostgreSQL e MongoDB |
+| Infra local | [Docker Compose](https://docs.docker.com/compose/) | — | Provisionamento de PostgreSQL, MongoDB e Neo4j opcional; Redis externo |
 | Qualidade | [Ruff](https://docs.astral.sh/ruff/) + [Coverage](https://coverage.readthedocs.io/) | 0.16 / 7.6 | Lint e cobertura mínima de 60% na CI |
 
 ## Estrutura do Projeto
@@ -158,11 +161,12 @@ mottainai-ia/
 │   └── api/
 │       └── main.py            # API principal FastAPI
 ├── scripts/
-│   ├── sql/                   # Schema v6, dataload e verificação
+│   ├── sql/                   # Referência oficial e verificação somente leitura
 │   ├── mongo/                 # Schema das collections MongoDB
 │   ├── windows/               # Bootstrap para Windows
 │   ├── generate_dev_token.py  # Token JWT de desenvolvimento
 │   ├── generate_embeddings.py # Embeddings dos chunks RAG
+│   ├── sync_neo4j_rag.py      # Projeta citações MongoDB no Neo4j por empresa
 │   ├── preflight_postgres.py  # Validação read-only do schema
 │   ├── setup_mongo.py         # Cria/atualiza collections e índices
 │   └── validate_ai.py         # Validação de prompts e respostas (usado na CI)
@@ -174,6 +178,8 @@ mottainai-ia/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── docker-compose.windows.yml
+├── docker-compose.neo4j.yml  # Neo4j opcional para o grafo de citações RAG
+├── docs/NEO4J_RAG_GRAPH.md   # Modelo, execução e pergunta de negócio em Cypher
 ├── pyproject.toml
 ├── requirements.txt
 ├── start.sh
@@ -204,7 +210,8 @@ GEMINI_API_KEY=
 GEMINI_VISION_MODEL=gemini-2.5-flash
 
 # Bancos
-POSTGRES_DSN=postgresql+asyncpg://mottainai:mottainai@localhost:5432/mottainai
+POSTGRES_DSN=postgresql+asyncpg://mottainai_ia:configure-local-password@localhost:5432/mottainai_operational
+ANALYTICS_POSTGRES_DSN=postgresql+asyncpg://mottainai_ia_read:configure-local-password@localhost:5432/mottainai_analytics
 MONGO_URI=mongodb://localhost:27017
 MONGO_DB=mottainai
 REDIS_URL=redis://localhost:6379/0
@@ -216,11 +223,25 @@ MCP_SHARED_TOKEN=
 A2A_SHARED_TOKEN=
 MCP_EMPRESA_ID=0                          # 0 = integração bloqueada
 A2A_EMPRESA_ID=0
+MCP_USER_ID=0
+MCP_OPERATIONAL_IDENTITY=
+MCP_ROLE=DONO
+A2A_USER_ID=0
+A2A_OPERATIONAL_IDENTITY=
+A2A_ROLE=DONO
 PUBLIC_BASE_URL=http://localhost:8000
 
 ENV=development
 LOG_LEVEL=INFO
 ```
+
+A conexão da API precisa de uma role `NOSUPERUSER NOBYPASSRLS`, herdando `mottainai_api`, sem ser proprietária das tabelas, com as políticas RLS oficiais aplicadas. A API verifica isso na inicialização. Para adaptar uma instalação local existente, execute `python scripts/configure_postgres_runtime.py` com um `POSTGRES_ADMIN_DSN` administrativo no ambiente. O script cria a role dedicada `mottainai_ia`, herda os grants oficiais de `mottainai_api`, valida consultas sem tenant e grava apenas a conexão local no `.env`; não altera senhas de outras aplicações nem dados do negócio. Se a role já existir, informe sua senha atual em `POSTGRES_APP_PASSWORD`.
+
+`LLM_TOKENS_PER_MINUTE` define o espaçamento preventivo das chamadas Groq conforme o limite real da conta (0 desativa). O runtime respeita `Retry-After` em respostas 429 e limita a espera total ao timeout configurado. Aumentar esse valor não aumenta a cota do provedor.
+
+Model evidence uses compact, lossless tables for repeated records while preserving every value, row, source reference and the existing history windows. Exact duplicate RAG texts are included once; audit records and API contracts keep their original structure. Token metrics include domain-agent calls, all native tool iterations and every Judge attempt, including invalid JSON responses. These totals are more complete than the previous agent-only counters. Daily provider quotas still apply independently of request pacing.
+
+The Judge has a 1024-token output budget so reasoning models can complete the final evaluation JSON. Public agents must distinguish an unavailable loyalty rule from an unlimited validity policy. Forecast transfer suggestions require checking destination demand and logistics rather than inventing store-specific conditions. The domain response budgets remain unchanged.
 
 > `LLM_PROVIDER=ollama_local` roda 100% offline (loopback, sem enviar conversas a terceiros). Baixe o modelo antes: `ollama pull qwen2.5:7b-instruct`.
 
@@ -263,9 +284,13 @@ docker compose up -d postgres mongo
 ### 2. Schema e dados
 
 ```bash
-# PostgreSQL — schema operacional v6 + dados de exemplo
-psql -h localhost -U mottainai -d mottainai -f scripts/sql/mottainai-v6.schema.sql
-psql -h localhost -U mottainai -d mottainai -f scripts/sql/mottainai-v6.dataload.sql
+# Clone o repositório oficial e use a versão registrada em operational-source.json.
+git clone --branch develop https://github.com/Mottainai-One/Mottainai-Banco-Operacional.git ../Mottainai-Banco-Operacional
+git -C ../Mottainai-Banco-Operacional checkout bc3d5cfe56f60cb750a87dd7d22a7eacf90c3868
+# Instalação apenas em banco NOVO, pela equipe de dados:
+psql -v ON_ERROR_STOP=1 -d mottainai_operational -f ../Mottainai-Banco-Operacional/database/operational/install.sql
+# Banco existente: revisar e aplicar o update_existing_api_rpa.sql oficial.
+# Nunca aplicar a antiga carga script/dataLoad.sql sobre o schema protegido.
 
 # valida o schema sem alterar nada (read-only)
 bash scripts/setup_postgres.sh
@@ -277,7 +302,30 @@ python scripts/setup_mongo.py --seed-demo
 python scripts/generate_embeddings.py
 ```
 
-> O schema oficial é versionado no repositório do banco operacional; os arquivos em `scripts/sql/` são a cópia de referência para desenvolvimento local.
+> A estrutura pertence exclusivamente ao repositório [Mottainai-Banco-Operacional](https://github.com/Mottainai-One/Mottainai-Banco-Operacional/tree/develop/database/operational). A IA não cria, remove nem altera tabelas. Os antigos instaladores/cargas v6 estão desativados; `scripts/sql/operational-source.json` registra a versão do contrato. MongoDB continua responsável por conversas/RAG e Redis por cache.
+
+### Grafo Neo4j opcional para a atividade de banco de dados
+
+O grafo usa metadados de conversas e citações RAG já persistidas no MongoDB. Redis continua apenas como cache, e nenhum endpoint das APIs MongoDB/Redis é alterado. Configure `NEO4J_PASSWORD` no `.env`, inicie o serviço e importe uma empresa:
+
+```bash
+docker compose --env-file .env -f docker-compose.neo4j.yml up -d
+python scripts/sync_neo4j_rag.py --empresa-id 1
+```
+
+O importador substitui apenas a projeção da empresa selecionada e não copia o conteúdo das mensagens, textos dos trechos, IDs de usuários ou embeddings. A consulta de negócio que percorre Empresa → Conversa → Resposta FAQ → Trecho RAG → Documento está em [docs/NEO4J_RAG_GRAPH.md](docs/NEO4J_RAG_GRAPH.md).
+
+O **operacional** valida identidade/permissões e executa recebimentos/descartes confirmados. O **analítico** atende todas as consultas de negócio do mobile/IA em transações somente leitura, com filtro de empresa e das lojas autorizadas. São conexões separadas: não há fallback de leitura para o operacional. As respostas usam a data da publicação bem-sucedida em `vw_published_batch`; ausência de carga retorna indisponibilidade. A IA não executa o ETL nem atualiza o analítico.
+
+Instale o segundo banco usando `database/analytics/install.sql` do mesmo commit. Dê ao login analítico somente `USAGE` no schema e `SELECT` em `dim_company`, `dim_store`, `dim_product`, `fact_sales`, `fact_sale_item`, `fact_loss_destination`, `fact_alert_snapshot`, `vw_published_batch` e `fact_inventory_snapshot`. O processo de carga usa outra credencial.
+
+O snapshot não fornece quantidade máxima, código textual do lote nem título/descrição/prioridade dos alertas. Esses campos retornam `null`; a IA deve comunicar que estão indisponíveis. O snapshot nunca substitui a revalidação de saldo no operacional antes de uma escrita.
+
+As consultas operacionais precisam de uma identidade autenticada. No contrato JWT atual, o emissor deve incluir `operational_identity` com o identificador de login protegido já existente em `app_user.email` (`EMAIL_SHA256_` + 64 dígitos hexadecimais). Ele nunca vem do corpo da requisição. A IA chama `fn_bootstrap_staff_context`, compara usuário, empresa e cargo atuais com os claims verificados e deixa o RLS limitar as lojas. Sem vínculo válido, o acesso é recusado.
+
+`sub` corresponde a `app_user.user_id`; movimentações usam o `employee_id` vinculado, que pode ser diferente. `Administrator`, `Manager` e `Operator` correspondem a `DONO`, `GERENTE` e `ESTOQUISTA`. Outros cargos não recebem permissões por aproximação.
+
+O banco já fornece `app_user.firebase_uid`; esta adaptação não cria campos nem implementa a mudança do mobile para Firebase direto. Essa integração exige validar o token Firebase e conferir o UID contra o vínculo existente, preservando o bootstrap oficial.
 
 ### 3. API
 
@@ -346,7 +394,7 @@ O sistema segue uma abordagem defensiva e orientada a controle:
 - Papel de usuário é validado antes de execução.
 - Cliente e FAQ não têm acesso a dados operacionais internos.
 - Ações de negócio exigem confirmação explícita do usuário.
-- MCP e A2A ficam bloqueados por padrão: cada token compartilhado é restrito a uma única empresa (`MCP_EMPRESA_ID` / `A2A_EMPRESA_ID`).
+- MCP e A2A ficam bloqueados por padrão: cada token compartilhado é restrito a uma empresa e a uma conta operacional ativa. Configure `*_EMPRESA_ID`, `*_USER_ID`, `*_OPERATIONAL_IDENTITY` (valor protegido `EMAIL_SHA256_...` do banco) e `*_ROLE`. O banco revalida o vínculo e as permissões a cada consulta; a identidade vem da configuração do servidor.
 - Respostas devem manter fontes e contexto de decisão quando aplicável.
 - O projeto adota fail-closed para validação e reforço de segurança.
 
@@ -400,3 +448,24 @@ Em `ENV=production`, a inicialização exige segredos fortes para JWT/Redis e pa
 ## Licença
 
 Projeto de uso interno/privado, não destinado a publicação como software open source.
+
+### Direct Firebase authentication for mobile staff
+
+Set `FIREBASE_AUTH_ENABLED=true` and `FIREBASE_PROJECT_ID` to the Android
+Firebase project's exact ID. The mobile sends `FirebaseUser.getIdToken(false)`
+directly as the Bearer token; it does not call an SQL token-exchange route.
+The IA verifies Google's RS256 signature, project audience/issuer and timestamps.
+`app_user.firebase_uid` must already match the verified Firebase UID, and
+`app_user.email` must contain the canonical `EMAIL_SHA256_` representation of
+the normalized Firebase email. No automatic user creation or UID binding occurs.
+The existing official bootstrap resolves active user/employee/store/company
+and the database role: Administrator → DONO, Manager → GERENTE, Operator →
+ESTOQUISTA. The numeric user and company IDs and permissions come from SQL;
+client role/company claims cannot override them. Missing/revoked mappings fail
+closed. Existing signed IA JWTs remain supported.
+
+Google certificates are cached only for their published lifetime; verification
+outages return 503. Firebase tokens support local IA logout through a token
+fingerprint. Global Firebase account revocation is not queried by this verifier;
+operational account status is revalidated on every authenticated request, and
+Firebase tokens expire according to their signed expiration.

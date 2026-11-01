@@ -27,12 +27,13 @@ class RunRagChatAgentTests(unittest.IsolatedAsyncioTestCase):
         state = {
             "sanitized_input": "qual a promoção de hoje?",
             "empresa_id": 42,
+            "user_role": "CLIENTE",
             "memory": {"facts": ["cliente vip"]},
             "history": [f"msg-{i}" for i in range(15)],
         }
 
         with (
-            patch("app.agents.rag_chat_base.retrieve_with_sources", new=AsyncMock(return_value=("contexto RAG", [{"type": "rag"}]))),
+            patch("app.agents.rag_chat_base.retrieve_with_sources", new=AsyncMock(return_value=("contexto RAG", [{"type": "rag"}]))) as retrieve,
             patch("app.agents.rag_chat_base.format_memory_for_prompt", return_value="MEMORIA_FORMATADA"),
             patch("app.agents.rag_chat_base.get_llm", return_value=llm) as get_llm,
         ):
@@ -41,6 +42,7 @@ class RunRagChatAgentTests(unittest.IsolatedAsyncioTestCase):
             )
 
         get_llm.assert_called_once_with(temperature=0.6)
+        retrieve.assert_awaited_once_with("qual a promoção de hoje?", 42, customer_only=True)
         system_text = str(llm.last_messages[0].content)
         self.assertIn("PROMPT_BASE", system_text)
         self.assertIn("MEMORIA_FORMATADA", system_text)

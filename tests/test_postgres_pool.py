@@ -7,6 +7,7 @@ Postgres service. This can't be proven with the mocked FakeSession used by
 tests/test_postgres_contracts.py: the whole point is real connection reuse
 across two separate transactions, which a mock doesn't have.
 """
+import os
 import unittest
 
 from sqlalchemy import text
@@ -24,6 +25,7 @@ class PostgresPoolConfigurationTests(unittest.TestCase):
         self.assertEqual(app_engine.pool.size(), settings.postgres_pool_size)
 
 
+@unittest.skipUnless(os.getenv("MOTTAINAI_POSTGRES_INTEGRATION_TESTS") == "1", "Opt-in PostgreSQL integration check")
 class PostgresPoolTenantIsolationTests(unittest.IsolatedAsyncioTestCase):
     async def test_set_config_does_not_leak_across_a_reused_pooled_connection(self):
         settings = get_settings()
@@ -34,12 +36,13 @@ class PostgresPoolTenantIsolationTests(unittest.IsolatedAsyncioTestCase):
         try:
             async with test_engine.connect() as conn:
                 await conn.execute(
-                    text("SELECT set_config('app.current_company_id', '1', true)")
+                    text("SELECT mottainai.fn_bootstrap_staff_context(:identity, 'EMAIL')"),
+                    {"identity": os.environ["MOTTAINAI_POSTGRES_TEST_IDENTITY"]}
                 )
                 await conn.commit()
         except Exception as exc:  # pragma: no cover - environment-dependent
             await test_engine.dispose()
-            self.skipTest(f"Postgres unreachable at {settings.postgres_dsn!r}: {exc}")
+            self.skipTest(f"Postgres check unavailable ({type(exc).__name__})")
 
         try:
             # New transaction, same underlying connection, and this one

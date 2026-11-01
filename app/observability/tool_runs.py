@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any, Awaitable, TypeVar
 
+from app.agents.context import context_json
 from app.database.mongo import get_mongo_db
 from app.observability.logging_setup import get_correlation_id
 
@@ -31,19 +32,9 @@ def as_object(value: Any, key: str = "value") -> dict | None:
     (and skill_executions' — app/observability/skill_executions.py reuses
     this directly rather than duplicating it, same reasoning below).
 
-    Postgres tool results carry types BSON cannot encode natively —
-    get_kpis() returns Decimal, several tools return datetime — which made
-    every dono/funcionario/motor_preditivo tool_runs insert raise
-    bson.errors.InvalidDocument. Because insert_many() runs inside a
-    background task with no try/except (by design, see record_tool_runs),
-    that failure was invisible: the chat response still came back 200 OK,
-    and nothing but a swallowed exception marked the write as lost.
-    json.dumps(value, default=str) is the exact same escape hatch already
-    used to embed this same row data into the agents' own prompts
-    (funcionario.py/dono.py/motor_preditivo.py all build their LLM context
-    with it) — round-tripping through it here turns Decimal/datetime/date
-    into plain strings, the same lossy-but-safe conversion already trusted
-    elsewhere in this codebase, before anything reaches pymongo.
+    Postgres Decimal values are normalized using the same exact serializer
+    as model evidence: integral values become integers, fractional values
+    keep their full precision as normalized decimal strings.
 
     Also wraps anything that isn't already a dict or None so a tool that
     returns a list, a string, or a number doesn't fail the object|null
@@ -51,7 +42,7 @@ def as_object(value: Any, key: str = "value") -> dict | None:
     """
     if value is None:
         return None
-    safe = json.loads(json.dumps(value, default=str, ensure_ascii=False))
+    safe = json.loads(context_json(value))
     return safe if isinstance(safe, dict) else {key: safe}
 
 

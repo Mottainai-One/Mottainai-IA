@@ -20,6 +20,12 @@
 
 ## Required rules
 
+- Database source: `Mottainai-One/Mottainai-Banco-Operacional`, branch `develop`; the pinned revision is in `scripts/sql/operational-source.json`.
+- Operational PostgreSQL owns identity, permissions and confirmed business writes. Analytical PostgreSQL owns mobile/IA business consultations and is strictly read-only for this service. Never fall back to operational business reads.
+- Preserve every official table and column. Do not introduce IA-owned DDL or load the retired v6 fixtures. MongoDB remains conversation/RAG storage; Redis remains cache infrastructure.
+- `app_user.user_id` and `employee.employee_id` are distinct. Resolve the employee through the official operational bootstrap and enforce company/store permissions.
+- Analytical evidence must include its publication date; missing publication or unavailable fields must not be presented as current or invented data.
+
 - Preserve the flow: input guardrail → context → supervisor → domain agent → Judge → output guardrail.
 - The Judge fails closed; an evaluation failure must never release a response.
 - Customer and FAQ agents must never access internal operational data.
