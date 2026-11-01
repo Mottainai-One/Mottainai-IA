@@ -204,7 +204,9 @@ async def decode_access_token(token: str) -> AuthContext:
         else:
             user_id = _positive_int(claims["sub"])
             company_id = _positive_int(claims["empresa_id"])
-            store_id = None
+            store_id = _positive_int(claims["store_id"]) if claims.get("store_id") is not None else None
+            if role in {"ESTOQUISTA", "GERENTE"} and store_id is None:
+                raise ValueError
         return AuthContext(
             usuario_id=user_id,
             empresa_id=company_id,

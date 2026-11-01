@@ -126,7 +126,7 @@ class FirebaseSqlBindingTests(unittest.IsolatedAsyncioTestCase):
         )
     async def test_maps_all_staff_roles_using_existing_uid_column(self):
         for db_role, role in (("ADMINISTRATOR","DONO"),("MANAGER","GERENTE"),("OPERATOR","ESTOQUISTA")):
-            row={"user_id":1003,"company_id":7,"database_role":db_role}
+            row={"user_id":1003,"company_id":7,"store_id":11,"database_role":db_role}
             session=SimpleNamespace(execute=AsyncMock(side_effect=[
                 SimpleNamespace(scalar_one=lambda:True),
                 SimpleNamespace(mappings=lambda:SimpleNamespace(first=lambda:row))]))
@@ -137,6 +137,7 @@ class FirebaseSqlBindingTests(unittest.IsolatedAsyncioTestCase):
                 identity=await resolve_firebase_identity("bound-uid")
             self.assertEqual(identity.role,role)
             self.assertEqual(identity.login_identity, "bound-uid")
+            self.assertEqual(identity.store_id, 11)
             query, params=session.execute.await_args_list[1].args
             self.assertIn("u.firebase_uid=:uid",str(query))
             self.assertIn("'FIREBASE_UID'", str(session.execute.await_args_list[0].args[0]))

@@ -79,6 +79,11 @@ class JwtAuthenticationTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(HTTPException):
                 await decode_access_token(token(role="ADMINISTRADOR"))
 
+    async def test_rejects_legacy_store_staff_token_without_store_scope(self):
+        with patch("app.security.auth.get_settings", return_value=SETTINGS):
+            with self.assertRaises(HTTPException):
+                await decode_access_token(token(role="GERENTE"))
+
     async def test_enforces_configured_issuer_and_audience(self):
         settings = SimpleNamespace(
             jwt_secret=SECRET,

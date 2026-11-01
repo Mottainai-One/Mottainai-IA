@@ -14,10 +14,11 @@ a form, and conflating the two would let a prompt (the user's message,
 or text injected through RAG content) trigger a real write.
 
 Tenant safety: every tool below is built per-request by build_toolkit(),
-which closes over `empresa_id` from the authenticated session
-(MottainaiState) — empresa_id is never a field in any tool's args_schema,
-so it is not part of what the model's tool call can express in the first
-place. If a model's tool call JSON includes an "empresa_id" key anyway
+which closes over `empresa_id` and the authenticated store scope from the
+session (MottainaiState). `empresa_id` is never a field in any tool's
+args_schema, and store-scoped users cannot widen their store scope through
+a model-supplied `store_id`. If a model's tool call JSON includes an
+"empresa_id" key anyway
 (hallucinated, or echoed back from injected text), Pydantic silently
 drops it as an unrecognized field when validating against the schema
 below (BaseModel's default `extra="ignore"`) — verified directly:
@@ -85,12 +86,18 @@ class _RetrieveKnowledgeArgs(BaseModel):
     query: str = Field(description="Pergunta ou termo a buscar na base de conhecimento.")
 
 
-def _build_stock_alerts_tool(empresa_id: int, tool_runs: list[dict]) -> BaseTool:
+def _store_filter(requested_store_id: int | None, authenticated_store_id: int | None) -> int | None:
+    """A store-scoped employee cannot widen or change the store via an LLM tool call."""
+    return authenticated_store_id if authenticated_store_id is not None else requested_store_id
+
+
+def _build_stock_alerts_tool(empresa_id: int, tool_runs: list[dict], authenticated_store_id: int | None) -> BaseTool:
     async def _run(limit: int = 10, store_id: int | None = None) -> str:
+        effective_store_id = _store_filter(store_id, authenticated_store_id)
         result = await timed_tool_call(
             tool_runs, "get_stock_alerts",
-            guarded(get_stock_alerts(empresa_id, limit=limit, store_id=store_id)),
-            input={"empresa_id": empresa_id, "limit": limit, "store_id": store_id},
+            guarded(get_stock_alerts(empresa_id, limit=limit, store_id=effective_store_id)),
+            input={"empresa_id": empresa_id, "limit": limit, "store_id": effective_store_id},
         )
         return _to_llm_content(result)
 
@@ -100,12 +107,13 @@ def _build_stock_alerts_tool(empresa_id: int, tool_runs: list[dict]) -> BaseTool
     )
 
 
-def _build_inventory_status_tool(empresa_id: int, tool_runs: list[dict]) -> BaseTool:
+def _build_inventory_status_tool(empresa_id: int, tool_runs: list[dict], authenticated_store_id: int | None) -> BaseTool:
     async def _run(store_id: int | None = None) -> str:
+        effective_store_id = _store_filter(store_id, authenticated_store_id)
         result = await timed_tool_call(
             tool_runs, "get_inventory_status",
-            guarded(get_inventory_status(empresa_id, store_id=store_id)),
-            input={"empresa_id": empresa_id, "store_id": store_id},
+            guarded(get_inventory_status(empresa_id, store_id=effective_store_id)),
+            input={"empresa_id": empresa_id, "store_id": effective_store_id},
         )
         return _to_llm_content(result)
 
@@ -115,12 +123,13 @@ def _build_inventory_status_tool(empresa_id: int, tool_runs: list[dict]) -> Base
     )
 
 
-def _build_expiring_batches_tool(empresa_id: int, tool_runs: list[dict]) -> BaseTool:
+def _build_expiring_batches_tool(empresa_id: int, tool_runs: list[dict], authenticated_store_id: int | None) -> BaseTool:
     async def _run(days_ahead: int = 7, store_id: int | None = None) -> str:
+        effective_store_id = _store_filter(store_id, authenticated_store_id)
         result = await timed_tool_call(
             tool_runs, "get_expiring_batches",
-            guarded(get_expiring_batches(empresa_id, days_ahead=days_ahead, store_id=store_id)),
-            input={"empresa_id": empresa_id, "days_ahead": days_ahead, "store_id": store_id},
+            guarded(get_expiring_batches(empresa_id, days_ahead=days_ahead, store_id=effective_store_id)),
+            input={"empresa_id": empresa_id, "days_ahead": days_ahead, "store_id": effective_store_id},
         )
         return _to_llm_content(result)
 
@@ -130,7 +139,7 @@ def _build_expiring_batches_tool(empresa_id: int, tool_runs: list[dict]) -> Base
     )
 
 
-def _build_kpis_tool(empresa_id: int, tool_runs: list[dict]) -> BaseTool:
+def _build_kpis_tool(empresa_id: int, tool_runs: list[dict], authenticated_store_id: int | None) -> BaseTool:
     async def _run() -> str:
         result = await timed_tool_call(
             tool_runs, "get_kpis", guarded(get_kpis(empresa_id)), input={"empresa_id": empresa_id},
@@ -143,7 +152,7 @@ def _build_kpis_tool(empresa_id: int, tool_runs: list[dict]) -> BaseTool:
     )
 
 
-def _build_kpis_by_store_tool(empresa_id: int, tool_runs: list[dict]) -> BaseTool:
+def _build_kpis_by_store_tool(empresa_id: int, tool_runs: list[dict], authenticated_store_id: int | None) -> BaseTool:
     async def _run(days_back: int = 30) -> str:
         result = await timed_tool_call(
             tool_runs, "get_kpis_by_store",
@@ -158,12 +167,13 @@ def _build_kpis_by_store_tool(empresa_id: int, tool_runs: list[dict]) -> BaseToo
     )
 
 
-def _build_sales_summary_tool(empresa_id: int, tool_runs: list[dict]) -> BaseTool:
+def _build_sales_summary_tool(empresa_id: int, tool_runs: list[dict], authenticated_store_id: int | None) -> BaseTool:
     async def _run(days_back: int = 30, store_id: int | None = None) -> str:
+        effective_store_id = _store_filter(store_id, authenticated_store_id)
         result = await timed_tool_call(
             tool_runs, "get_sales_summary",
-            guarded(get_sales_summary(empresa_id, days_back=days_back, store_id=store_id)),
-            input={"empresa_id": empresa_id, "days_back": days_back, "store_id": store_id},
+            guarded(get_sales_summary(empresa_id, days_back=days_back, store_id=effective_store_id)),
+            input={"empresa_id": empresa_id, "days_back": days_back, "store_id": effective_store_id},
         )
         return _to_llm_content(result)
 
@@ -174,7 +184,7 @@ def _build_sales_summary_tool(empresa_id: int, tool_runs: list[dict]) -> BaseToo
 
 
 def _build_retrieve_knowledge_tool(
-    empresa_id: int, tool_runs: list[dict], sources_acc: list[dict],
+    empresa_id: int, tool_runs: list[dict], sources_acc: list[dict], authenticated_store_id: int | None,
 ) -> BaseTool:
     async def _run(query: str) -> str:
         context, sources = await timed_tool_call(
@@ -211,6 +221,7 @@ _NEEDS_SOURCES_ACC = {"retrieve_with_sources"}
 
 def build_toolkit(
     names: list[str], *, empresa_id: int, tool_runs: list[dict], sources_acc: list[dict],
+    authenticated_store_id: int | None = None,
 ) -> list[BaseTool]:
     """Builds this request's tool list for one agent. `empresa_id` is
     baked into each tool's closure here, once, for every tool it binds —
@@ -227,7 +238,7 @@ def build_toolkit(
     for name in names:
         builder = _TOOL_BUILDERS[name]
         if name in _NEEDS_SOURCES_ACC:
-            tools.append(builder(empresa_id, tool_runs, sources_acc))
+            tools.append(builder(empresa_id, tool_runs, sources_acc, authenticated_store_id))
         else:
-            tools.append(builder(empresa_id, tool_runs))
+            tools.append(builder(empresa_id, tool_runs, authenticated_store_id))
     return tools
