@@ -46,7 +46,8 @@ async def get_customer_public_context(query: str, company_id: int) -> tuple[str,
                 ]
                 context_parts.append("Promoções ativas e aprovadas:\n" + ("\n".join(lines) if lines else "Nenhuma promoção ativa encontrada."))
             else:
-                lines = [f"{row['store_name']} (store_id {row['store_id']})" for row in rows]
+                lines = [row["store_name"] for row in rows]
                 context_parts.append("Lojas ativas:\n" + ("\n".join(lines) if lines else "Nenhuma loja ativa encontrada."))
 
     return "\n\n".join(context_parts), sources
+
