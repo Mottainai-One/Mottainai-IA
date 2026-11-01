@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     mongo_db: str = "mottainai"
     redis_url: str = "redis://localhost:6379/0"
     redis_password: str = ""
+    redis_cache_url: str = ""
+    redis_cache_password: str = ""
     redis_max_connections: int = 20
     # 2s was too tight in practice: Docker Desktop's networking on Windows can
     # add enough latency to the first connection that it consistently timed
@@ -75,6 +77,8 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     firebase_auth_enabled: bool = False
     firebase_project_id: str = ""
+    # Shared, customer-visible RAG tenant seeded by scripts/setup_mongo.py.
+    customer_chat_empresa_id: int = Field(default=1, ge=1)
     jwt_expiration_minutes: int = 60
     jwt_issuer: str = ""
     jwt_audience: str = ""

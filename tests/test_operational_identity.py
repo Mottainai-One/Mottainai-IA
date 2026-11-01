@@ -13,7 +13,7 @@ def result(value):
 
 class OperationalIdentityTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.token = current_identity.set(OperationalIdentity(101, 7, "ESTOQUISTA", "EMAIL_SHA256_" + "a" * 64))
+        self.token = current_identity.set(OperationalIdentity(101, 7, "ESTOQUISTA", "firebase-user-123"))
         self.addCleanup(current_identity.reset, self.token)
         self.actor = {"user_id": 101, "company_id": 7, "store_id": 3,
                       "employee_id": 29, "database_role": "OPERATOR"}
@@ -23,6 +23,8 @@ class OperationalIdentityTests(unittest.IsolatedAsyncioTestCase):
         actor = await initialize_pg_context(session, 7)
         self.assertEqual(actor["employee_id"], 29)
         self.assertIn("fn_bootstrap_staff_context", str(session.execute.await_args_list[0].args[0]))
+        self.assertIn("'FIREBASE_UID'", str(session.execute.await_args_list[0].args[0]))
+        self.assertEqual(session.execute.await_args_list[0].args[1]["identity"], "firebase-user-123")
         self.assertTrue(all("set_config" not in str(call.args[0]) for call in session.execute.await_args_list))
 
     async def test_missing_identity_and_cross_company_fail_before_database_access(self):

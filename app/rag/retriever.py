@@ -22,7 +22,7 @@ from sentence_transformers import SentenceTransformer
 from app.cache.keyspace import rag_result
 from app.config import get_settings
 from app.database.mongo import get_mongo_db
-from app.database.redis_client import get_redis
+from app.database.redis_client import get_cache_redis
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -80,6 +80,7 @@ async def retrieve(
     empresa_id: int,
     top_k: int = 5,
     min_score: float = 0.4,
+    allowed_categories: list[str] | None = None,
 ) -> list[dict]:
     """
     Fetches the `top_k` chunks most relevant to the query.
@@ -94,10 +95,13 @@ async def retrieve(
     db = get_mongo_db()
 
     # Loads the company's document IDs
+    document_filter: dict = {"empresaId": empresa_id}
+    if allowed_categories is not None:
+        document_filter["category"] = {"$in": allowed_categories}
     doc_ids = [
         doc["_id"]
         async for doc in db.rag_documents.find(
-            {"empresaId": empresa_id}, {"_id": 1}
+            document_filter, {"_id": 1}
         )
     ]
 
@@ -148,16 +152,21 @@ async def retrieve(
 CHUNK_SEPARATOR = "\n\n---\n\n"
 
 
-def _rag_cache_key(query: str, empresa_id: int, top_k: int) -> str:
-    normalized = f"dedup-v1::{query.strip().lower()}::{top_k}"
+def _rag_cache_key(
+    query: str, empresa_id: int, top_k: int, allowed_categories: list[str] | None = None,
+) -> str:
+    audience = ",".join(sorted(allowed_categories)) if allowed_categories is not None else "all"
+    normalized = f"dedup-v2::{query.strip().lower()}::{top_k}::{audience}"
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
     return rag_result(empresa_id, digest)
 
 
 async def _read_rag_cache(cache_key: str) -> Optional[tuple[str, list[dict]]]:
     """Reads the RAG result from cache. Fail-open: Redis error = cache miss."""
+    if not settings.redis_cache_url:
+        return None
     try:
-        cached = await get_redis().get(cache_key)
+        cached = await get_cache_redis().get(cache_key)
     except Exception:
         logger.warning("RAG cache unavailable (read) — continuing without cache", exc_info=True)
         return None
@@ -169,9 +178,11 @@ async def _read_rag_cache(cache_key: str) -> Optional[tuple[str, list[dict]]]:
 
 async def _write_rag_cache(cache_key: str, context: str, sources: list[dict]) -> None:
     """Writes the RAG result to cache. Fail-open: a Redis error does not affect the response."""
+    if not settings.redis_cache_url:
+        return
     try:
         payload = json.dumps({"context": context, "sources": sources})
-        await get_redis().set(cache_key, payload, ex=settings.rag_cache_ttl_seconds)
+        await get_cache_redis().set(cache_key, payload, ex=settings.rag_cache_ttl_seconds)
     except Exception:
         logger.warning("RAG cache unavailable (write) — continuing without cache", exc_info=True)
 
@@ -180,6 +191,8 @@ async def retrieve_with_sources(
     query: str,
     empresa_id: int,
     top_k: int = 5,
+    *,
+    customer_only: bool = False,
 ) -> tuple[str, list[dict]]:
     """
     Returns (formatted_context, sources) to inject into the prompt.
@@ -190,12 +203,13 @@ async def retrieve_with_sources(
     embeddings/similarity. The cache is purely an optimization: if Redis is
     down, RAG keeps working normally, just without the speed gain.
     """
-    cache_key = _rag_cache_key(query, empresa_id, top_k)
+    allowed_categories = ["FAQ"] if customer_only else None
+    cache_key = _rag_cache_key(query, empresa_id, top_k, allowed_categories)
     cached = await _read_rag_cache(cache_key)
     if cached is not None:
         return cached
 
-    results = await retrieve(query, empresa_id, top_k)
+    results = await retrieve(query, empresa_id, top_k, allowed_categories=allowed_categories)
     if not results:
         context, sources = "Nenhum documento relevante encontrado na base de conhecimento.", []
         await _write_rag_cache(cache_key, context, sources)
