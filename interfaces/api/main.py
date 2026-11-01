@@ -9,6 +9,7 @@ Portuguese, like the agents' SYSTEM_PROMPT — the one exception is the /a2a
 app/integrations/mcp_a2a.py, which targets external systems, not end users.
 """
 import asyncio
+import binascii
 import io
 import logging
 import re
@@ -74,7 +75,13 @@ from app.observability.logging_setup import (
 from app.observability.metrics import get_metrics_summary, record_execution_metrics
 from app.observability.routing_logs import record_routing_log
 from app.observability.tool_runs import record_tool_runs
-from app.security.auth import AuthContext, is_configured_jwt_secret, require_auth, require_roles
+from app.security.auth import (
+    AuthContext,
+    is_configured_jwt_secret,
+    jwt_verification_key,
+    require_auth,
+    require_roles,
+)
 from config.settings import get_settings
 
 settings = get_settings()
@@ -91,6 +98,10 @@ async def lifespan(app: FastAPI):
     settings.validate_runtime_security()
     if not is_configured_jwt_secret(settings.jwt_secret):
         raise RuntimeError("JWT_SECRET must be a unique secret of at least 32 characters, not a placeholder")
+    try:
+        jwt_verification_key(settings)
+    except (ValueError, binascii.Error) as exc:
+        raise RuntimeError("JWT_SECRET encoding does not match the configured issuer format") from exc
 
     # Offline mode is only safe once the embedding model is already cached.
     if settings.transformers_offline:
@@ -450,6 +461,7 @@ async def chat(
         "session_id": request.session_id,
         "empresa_id": principal.empresa_id,
         "usuario_id": principal.usuario_id,
+        "store_id": principal.store_id,
         "user_role": principal.role,
         "user_input": request.message,
         "sanitized_input": "",

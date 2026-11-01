@@ -17,12 +17,20 @@ class FakeResult:
     def fetchall(self):
         return self._rows
 
+    def scalar(self):
+        return self._rows[0][0] if self._rows else True
+
+    def mappings(self):
+        return self
+
+    def one(self):
+        return {"usuario_id": 9, "empresa_id": 1, "store_id": 3}
+
 
 class FakeSession:
     """
-    The set_config statement always succeeds silently (it's not what
-    these tests are about); `query_side_effect` drives what happens on
-    each attempt at the REAL query, one item consumed per attempt.
+    The database context bootstrap succeeds (it's not what these tests
+    are about); `query_side_effect` drives the real query outcome.
     """
 
     def __init__(self, query_side_effect):
@@ -30,8 +38,10 @@ class FakeSession:
         self.query_call_count = 0
 
     async def execute(self, statement, params=None):
-        if "set_config" in str(statement):
-            return None
+        if "fn_bootstrap_staff_context" in str(statement):
+            return FakeResult([(True,)])
+        if "fn_get_current_user_id" in str(statement):
+            return FakeResult()
         self.query_call_count += 1
         outcome = self._query_side_effect.pop(0)
         if isinstance(outcome, Exception):
@@ -59,6 +69,9 @@ class PostgresRetryTests(unittest.IsolatedAsyncioTestCase):
         session = FakeSession(query_side_effect=[_op_error(), _op_error(), FakeResult([(7,)])])
         with (
             patch("app.tools.postgres_tools.get_pg_session", return_value=FakeSessionContext(session)),
+            patch("app.tools.postgres_tools.get_tenant_identity", return_value=postgres_tools.TenantIdentity(
+                firebase_uid="firebase-uid-9", usuario_id=9, empresa_id=1, store_id=3,
+            )),
             patch("asyncio.sleep", new=AsyncMock()),
         ):
             rows = await postgres_tools._exec("SELECT 1", empresa_id=1)
@@ -70,6 +83,9 @@ class PostgresRetryTests(unittest.IsolatedAsyncioTestCase):
         session = FakeSession(query_side_effect=[_op_error(), _op_error(), _op_error()])
         with (
             patch("app.tools.postgres_tools.get_pg_session", return_value=FakeSessionContext(session)),
+            patch("app.tools.postgres_tools.get_tenant_identity", return_value=postgres_tools.TenantIdentity(
+                firebase_uid="firebase-uid-9", usuario_id=9, empresa_id=1, store_id=3,
+            )),
             patch("asyncio.sleep", new=AsyncMock()),
         ):
             with self.assertRaises(OperationalError):
@@ -81,6 +97,9 @@ class PostgresRetryTests(unittest.IsolatedAsyncioTestCase):
         session = FakeSession(query_side_effect=[RuntimeError("not transient, a real bug")])
         with (
             patch("app.tools.postgres_tools.get_pg_session", return_value=FakeSessionContext(session)),
+            patch("app.tools.postgres_tools.get_tenant_identity", return_value=postgres_tools.TenantIdentity(
+                firebase_uid="firebase-uid-9", usuario_id=9, empresa_id=1, store_id=3,
+            )),
             patch("asyncio.sleep", new=AsyncMock()) as sleep,
         ):
             with self.assertRaises(RuntimeError):

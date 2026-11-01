@@ -24,6 +24,7 @@ from sqlalchemy.exc import OperationalError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 
 from app.database.postgres import get_pg_session
+from app.security.tenant_context import TenantIdentity, get_tenant_identity
 from config.settings import get_settings
 
 settings = get_settings()
@@ -41,6 +42,38 @@ T = TypeVar("T")
 # to "waiting on pool_timeout". Sized to the pool's total real capacity,
 # not to any one node's call count.
 pg_fanout_semaphore = asyncio.Semaphore(settings.postgres_pool_size + settings.postgres_max_overflow)
+
+
+async def _bootstrap_tenant_context(session, empresa_id: int) -> None:
+    """Ask the database to derive RLS scope from the verified Firebase UID.
+
+    The operational schema intentionally revokes direct SET/set_config access
+    from API roles. Its SECURITY DEFINER bootstrap function resolves the UID
+    against active staff records and establishes transaction-local context.
+    """
+    identity: TenantIdentity | None = get_tenant_identity()
+    if identity is None:
+        raise PermissionError("Verified staff identity is required for operational data access.")
+    if identity.empresa_id != empresa_id:
+        raise PermissionError("Requested company does not match the authenticated identity.")
+
+    result = await session.execute(
+        text("SELECT mottainai.fn_bootstrap_staff_context(:firebase_uid, 'FIREBASE_UID')"),
+        {"firebase_uid": identity.firebase_uid},
+    )
+    if not result.scalar():
+        raise PermissionError("The authenticated staff identity is no longer active in the database.")
+
+    context_result = await session.execute(text(
+        "SELECT mottainai.fn_get_current_user_id() AS usuario_id, "
+        "mottainai.fn_get_current_company_id() AS empresa_id, "
+        "mottainai.fn_get_current_store_id() AS store_id"
+    ))
+    row = context_result.mappings().one()
+    if row["usuario_id"] != identity.usuario_id or row["empresa_id"] != identity.empresa_id:
+        raise PermissionError("The JWT identity does not match the active database identity.")
+    if identity.store_id is not None and row["store_id"] != identity.store_id:
+        raise PermissionError("The JWT store does not match the active database store.")
 
 
 async def guarded(call: Awaitable[T]) -> T:
@@ -82,13 +115,7 @@ async def _exec(
 
     query_params = {**(params or {}), "empresa_id": empresa_id}
     async with get_pg_session() as session:
-        # The v6 operational schema applies RLS on company, retail_store,
-        # inventory and sales_transaction. The context is local to the
-        # transaction to avoid leaking the tenant across connections.
-        await session.execute(
-            text("SELECT set_config('app.current_company_id', CAST(:empresa_id AS TEXT), true)"),
-            {"empresa_id": str(empresa_id)},
-        )
+        await _bootstrap_tenant_context(session, empresa_id)
         result = await session.execute(text(sql), query_params)
         cols = list(result.keys())
         return [dict(zip(cols, row)) for row in result.fetchall()]
@@ -110,9 +137,9 @@ async def get_stock_alerts(
     sql = f"""
         SELECT
             a.alert_id        AS id,
-            a.alert_type      AS type,
-            a.priority,
-            a.status,
+            a.alert_type::TEXT AS type,
+            a.priority::TEXT   AS priority,
+            a.status::TEXT     AS status,
             a.title,
             a.description,
             a.created_at,
@@ -760,10 +787,7 @@ async def discard_batch(
         raise ValueError("quantity must be greater than zero.")
 
     async with get_pg_session() as session:
-        await session.execute(
-            text("SELECT set_config('app.current_company_id', CAST(:empresa_id AS TEXT), true)"),
-            {"empresa_id": str(empresa_id)},
-        )
+        await _bootstrap_tenant_context(session, empresa_id)
 
         inventory = await _find_inventory(
             session, empresa_id=empresa_id, store_id=store_id, batch_id=batch_id
@@ -855,10 +879,7 @@ async def receive_inventory(
         raise ValueError("quantity must be greater than zero.")
 
     async with get_pg_session() as session:
-        await session.execute(
-            text("SELECT set_config('app.current_company_id', CAST(:empresa_id AS TEXT), true)"),
-            {"empresa_id": str(empresa_id)},
-        )
+        await _bootstrap_tenant_context(session, empresa_id)
 
         inventory = await _find_inventory(
             session, empresa_id=empresa_id, store_id=store_id, batch_id=batch_id

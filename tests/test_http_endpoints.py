@@ -31,6 +31,7 @@ JWT_SECRET = "a" * 32
 def _signed_token(**claims: object) -> str:
     payload = {
         "sub": "10", "empresa_id": 1, "role": "CLIENTE",
+        "use": "access",
         "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
     }
     payload.update(claims)

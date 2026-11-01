@@ -18,6 +18,15 @@ class FakeResult:
     def fetchall(self):
         return self._rows
 
+    def scalar(self):
+        return self._rows[0][0] if self._rows else True
+
+    def mappings(self):
+        return self
+
+    def one(self):
+        return dict(zip(self._keys, self._rows[0]))
+
 
 class FakeSession:
     def __init__(self, results: list[FakeResult]):
@@ -41,11 +50,14 @@ class FakeSessionContext:
 
 
 class PostgresExecutionContracts(unittest.IsolatedAsyncioTestCase):
-    async def test_sets_transaction_local_company_context_before_query(self):
-        session = FakeSession([FakeResult(), FakeResult(["id"], [(7,)])])
-        with patch(
-            "app.tools.postgres_tools.get_pg_session",
-            return_value=FakeSessionContext(session),
+    async def test_bootstraps_rls_context_from_verified_firebase_uid_before_query(self):
+        context_result = FakeResult(["usuario_id", "empresa_id", "store_id"], [(9, 42, 3)])
+        session = FakeSession([FakeResult(rows=[(True,)]), context_result, FakeResult(["id"], [(7,)])])
+        with (
+            patch("app.tools.postgres_tools.get_pg_session", return_value=FakeSessionContext(session)),
+            patch("app.tools.postgres_tools.get_tenant_identity", return_value=postgres_tools.TenantIdentity(
+                firebase_uid="firebase-uid-9", usuario_id=9, empresa_id=42, store_id=3,
+            )),
         ):
             rows = await postgres_tools._exec(
                 "SELECT :empresa_id AS id",
@@ -53,12 +65,26 @@ class PostgresExecutionContracts(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(rows, [{"id": 7}])
-        context_sql, context_params = session.calls[0]
-        query_sql, query_params = session.calls[1]
-        self.assertIn("set_config('app.current_company_id'", context_sql)
-        self.assertEqual(context_params, {"empresa_id": "42"})
+        bootstrap_sql, bootstrap_params = session.calls[0]
+        query_sql, query_params = session.calls[2]
+        self.assertIn("fn_bootstrap_staff_context", bootstrap_sql)
+        self.assertEqual(bootstrap_params, {"firebase_uid": "firebase-uid-9"})
         self.assertIn("SELECT :empresa_id AS id", query_sql)
         self.assertEqual(query_params["empresa_id"], 42)
+
+    async def test_rejects_database_identity_mismatch(self):
+        session = FakeSession([
+            FakeResult(rows=[(True,)]),
+            FakeResult(["usuario_id", "empresa_id", "store_id"], [(10, 42, 3)]),
+        ])
+        with (
+            patch("app.tools.postgres_tools.get_pg_session", return_value=FakeSessionContext(session)),
+            patch("app.tools.postgres_tools.get_tenant_identity", return_value=postgres_tools.TenantIdentity(
+                firebase_uid="firebase-uid-9", usuario_id=9, empresa_id=42, store_id=3,
+            )),
+        ):
+            with self.assertRaises(PermissionError):
+                await postgres_tools._exec("SELECT 1", empresa_id=42)
 
     async def test_rejects_invalid_company_context(self):
         with self.assertRaises(ValueError):
@@ -66,6 +92,18 @@ class PostgresExecutionContracts(unittest.IsolatedAsyncioTestCase):
 
 
 class PostgresSchemaContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_stock_alert_enum_fields_are_cast_for_asyncpg(self):
+        with patch(
+            "app.tools.postgres_tools._exec",
+            new=AsyncMock(return_value=[]),
+        ) as execute:
+            await postgres_tools.get_stock_alerts(42, limit=5, store_id=99)
+
+        sql = execute.await_args.args[0]
+        self.assertIn("a.alert_type::TEXT AS type", sql)
+        self.assertIn("a.priority::TEXT", sql)
+        self.assertIn("a.status::TEXT", sql)
+
     async def test_stock_alerts_binds_optional_store_filter(self):
         with patch(
             "app.tools.postgres_tools._exec",

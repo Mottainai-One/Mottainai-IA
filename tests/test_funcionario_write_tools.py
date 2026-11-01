@@ -6,6 +6,25 @@ from unittest.mock import AsyncMock, patch
 from app.tools import postgres_tools
 
 
+class TenantContextTestCase(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.identity_patch = patch(
+            "app.tools.postgres_tools.get_tenant_identity",
+            return_value=postgres_tools.TenantIdentity(
+                firebase_uid="firebase-uid-9", usuario_id=9, empresa_id=42, store_id=1,
+            ),
+        )
+        self.identity_patch.start()
+
+    def tearDown(self):
+        self.identity_patch.stop()
+
+
+class FakeScalarResult:
+    def scalar(self):
+        return True
+
+
 class FakeMappingResult:
     def __init__(self, row: dict | None):
         self._row = row
@@ -16,14 +35,26 @@ class FakeMappingResult:
     def first(self):
         return self._row
 
+    def one(self):
+        return self._row
+
 
 class FakeWriteSession:
     def __init__(self, results: list):
+        # Drop the former direct-set_config placeholder; the secure
+        # bootstrap and identity checks are supplied below.
+        if results and results[0] is None:
+            results = results[1:]
         self._results = iter(results)
         self.statements: list[str] = []
 
     async def execute(self, statement, params=None):
-        self.statements.append(str(statement))
+        sql = str(statement)
+        self.statements.append(sql)
+        if "fn_bootstrap_staff_context" in sql:
+            return FakeScalarResult()
+        if "fn_get_current_user_id" in sql:
+            return FakeMappingResult({"usuario_id": 9, "empresa_id": 42, "store_id": 1})
         return next(self._results)
 
 
@@ -38,7 +69,7 @@ class FakeSessionContext:
         return False
 
 
-class DiscardBatchTests(unittest.IsolatedAsyncioTestCase):
+class DiscardBatchTests(TenantContextTestCase):
     async def test_writes_disposal_audit_rows_and_decrements_inventory(self):
         session = FakeWriteSession([
             None,  # set_config
@@ -57,9 +88,9 @@ class DiscardBatchTests(unittest.IsolatedAsyncioTestCase):
             "disposal_id": 900, "batch_id": 77, "store_id": 1,
             "disposed_quantity": Decimal("3"), "new_inventory_balance": Decimal("12.000"),
         })
-        self.assertIn("INSERT INTO mottainai.disposal ", session.statements[2])
-        self.assertIn("INSERT INTO mottainai.disposal_item", session.statements[3])
-        self.assertIn("'DISPOSAL'", session.statements[4])
+        self.assertIn("INSERT INTO mottainai.disposal ", session.statements[3])
+        self.assertIn("INSERT INTO mottainai.disposal_item", session.statements[4])
+        self.assertIn("'DISPOSAL'", session.statements[5])
 
     async def test_raises_when_no_matching_inventory_for_tenant(self):
         session = FakeWriteSession([None, FakeMappingResult(None)])
@@ -104,7 +135,7 @@ class DiscardBatchTests(unittest.IsolatedAsyncioTestCase):
                     quantity=Decimal("31"), reason="vencido", role="ESTOQUISTA",
                 )
         # blocked before any write — only the lookup ran, no INSERT/UPDATE
-        self.assertEqual(len(session.statements), 2)
+        self.assertEqual(len(session.statements), 3)
 
     async def test_estoquista_allowed_at_or_below_the_disposal_ceiling(self):
         session = FakeWriteSession([
@@ -141,7 +172,7 @@ class DiscardBatchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["disposal_id"], 902)
 
 
-class ReceiveInventoryTests(unittest.IsolatedAsyncioTestCase):
+class ReceiveInventoryTests(TenantContextTestCase):
     async def test_increments_inventory_with_in_movement(self):
         session = FakeWriteSession([
             None,  # set_config
@@ -157,7 +188,7 @@ class ReceiveInventoryTests(unittest.IsolatedAsyncioTestCase):
             "batch_id": 77, "store_id": 1,
             "received_quantity": Decimal("20"), "new_inventory_balance": Decimal("40.000"),
         })
-        self.assertIn("'IN'", session.statements[2])
+        self.assertIn("'IN'", session.statements[3])
 
     async def test_raises_when_no_matching_inventory_for_tenant(self):
         session = FakeWriteSession([None, FakeMappingResult(None)])
