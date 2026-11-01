@@ -1,5 +1,6 @@
 """Separate Redis pools for protected state and disposable RAG cache."""
 import asyncio
+
 import redis.asyncio as aioredis
 
 from config.settings import get_settings
