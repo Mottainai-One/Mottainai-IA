@@ -40,6 +40,7 @@ services:
       ANALYTICS_POSTGRES_DSN: ${ANALYTICS_POSTGRES_CONTAINER_DSN:?configure the analytics read-only connection}
       MONGO_URI: mongodb://mongo:27017
       REDIS_URL: redis://:${REDIS_PASSWORD:?defina REDIS_PASSWORD no arquivo .env}@redis:6379/0
+      REDIS_CACHE_URL: redis://redis-cache:6379/0
     depends_on:
       postgres:
         condition: service_healthy

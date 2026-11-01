@@ -108,7 +108,10 @@ async def decode_access_token(token: str) -> AuthContext:
     except jwt.PyJWTError as exc:
         raise _invalid_token() from exc
     if algorithm == "RS256":
-        from app.database.identity import resolve_firebase_identity
+        from app.database.identity import (
+            resolve_firebase_customer_identity,
+            resolve_firebase_identity,
+        )
         from app.security.firebase_auth import (
             FirebaseVerificationUnavailable,
             verify_firebase_id_token,
@@ -123,7 +126,15 @@ async def decode_access_token(token: str) -> AuthContext:
         jti = "firebase-" + hashlib.sha256(token.encode()).hexdigest()
         if await _is_revoked(jti):
             raise _invalid_token()
-        identity = await resolve_firebase_identity(firebase.uid, firebase.email)
+        customer = await resolve_firebase_customer_identity(firebase.uid)
+        if customer is not None:
+            # Negative IDs keep customer chat/session/memory keys disjoint
+            # from employee app_user IDs in Mongo and Redis.
+            return AuthContext(
+                -customer.customer_id, customer.chat_company_id, "CLIENTE",
+                jti, firebase.expires_at, None,
+            )
+        identity = await resolve_firebase_identity(firebase.uid)
         return AuthContext(identity.user_id, identity.company_id, identity.role,
                            jti, firebase.expires_at, identity.login_identity)
     if not is_configured_jwt_secret(settings.jwt_secret):

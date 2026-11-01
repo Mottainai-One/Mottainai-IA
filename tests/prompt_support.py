@@ -19,3 +19,4 @@ def expand_tables(value):
 def read_json_block(prompt: str, heading: str):
     block = prompt.split(heading, 1)[1].lstrip().splitlines()[0]
     return expand_tables(json.loads(block))
+1
